@@ -691,3 +691,229 @@ Each `Location` must point to the corresponding `dbfs:/FileStore/pakistan_econom
 Place the four `CREATE DATABASE` statements in a tracked file such as `sql/create_catalog_objects.sql`. Commit the SQL file, not the generated database contents.
 
 **Checkpoint 5:** All four databases appear in `spark_catalog` and each has the intended project-specific DBFS location.
+
+## Step 6 — Create and run `notebooks/00_verify_setup.py`
+
+Create this file inside the Databricks Git folder. If it already exists, compare it with the content below and preserve any intentional project logic rather than overwriting blindly.
+
+Databricks recognizes the source-file header and `COMMAND` markers as notebook cells. Copy the complete content:
+
+```python
+# Databricks notebook source
+# MAGIC %md
+# MAGIC # Verify Pakistan Economy Warehouse Setup
+# MAGIC This notebook verifies packages, DBFS, Hive databases, and Delta Lake.
+
+# COMMAND ----------
+
+# Keep this cell for ephemeral/serverless sessions. If cluster libraries are
+# already installed, pip reports that the requirements are satisfied.
+# MAGIC %pip install openpyxl pdfplumber pypdf Pillow pytesseract
+
+# COMMAND ----------
+
+from datetime import datetime, timezone
+from importlib.metadata import version
+import json
+import shutil
+
+from pyspark.sql.functions import current_timestamp
+from pyspark.sql.types import IntegerType, StringType, StructField, StructType
+
+PROJECT_ROOT = "dbfs:/FileStore/pakistan_economy"
+REQUIRED_DATABASES = [
+    "lakehouse_ops",
+    "lakehouse_bronze",
+    "lakehouse_silver",
+    "lakehouse_gold",
+]
+REQUIRED_PATHS = [
+    f"{PROJECT_ROOT}/staging/full",
+    f"{PROJECT_ROOT}/staging/incremental/batch_001",
+    f"{PROJECT_ROOT}/bronze",
+    f"{PROJECT_ROOT}/silver",
+    f"{PROJECT_ROOT}/gold",
+    f"{PROJECT_ROOT}/quarantine",
+    f"{PROJECT_ROOT}/checkpoints",
+    f"{PROJECT_ROOT}/ops",
+]
+
+print("UTC verification time:", datetime.now(timezone.utc).isoformat())
+print("Spark version:", spark.version)
+print("Current catalog:", spark.sql("SELECT current_catalog()").first()[0])
+
+# COMMAND ----------
+
+# 1. Verify required Python packages.
+required_packages = ["openpyxl", "pdfplumber", "pypdf", "Pillow", "pytesseract"]
+package_versions = {package: version(package) for package in required_packages}
+print(json.dumps(package_versions, indent=2, sort_keys=True))
+
+# Tesseract is a separate system executable, not installed by the Python wrapper.
+print("Tesseract executable:", shutil.which("tesseract"))
+
+# COMMAND ----------
+
+# 2. Verify DBFS directories. Missing paths fail the notebook clearly.
+missing_paths = []
+for path in REQUIRED_PATHS:
+    try:
+        dbutils.fs.ls(path)
+        print("OK:", path)
+    except Exception as exc:
+        print("MISSING:", path, type(exc).__name__, str(exc)[:200])
+        missing_paths.append(path)
+
+assert not missing_paths, f"Create these DBFS paths first: {missing_paths}"
+
+# Write a small persistence probe outside driver-local storage.
+probe_path = f"{PROJECT_ROOT}/checkpoints/setup_probe.json"
+probe_payload = json.dumps(
+    {
+        "verified_at_utc": datetime.now(timezone.utc).isoformat(),
+        "spark_version": spark.version,
+    },
+    sort_keys=True,
+)
+assert dbutils.fs.put(probe_path, probe_payload, overwrite=True)
+print("Wrote DBFS persistence probe:", probe_path)
+
+# COMMAND ----------
+
+# 3. Verify the four databases.
+database_names = {
+    row[0] for row in spark.sql("SHOW DATABASES IN spark_catalog").collect()
+}
+missing_databases = sorted(set(REQUIRED_DATABASES) - database_names)
+
+print("Databases found:", sorted(database_names))
+assert not missing_databases, (
+    "Run the Step 5 SQL first. Missing databases: "
+    f"{missing_databases}"
+)
+
+# COMMAND ----------
+
+# 4. Verify Delta table creation and idempotent MERGE support.
+spark.sql(
+    """
+    CREATE TABLE IF NOT EXISTS lakehouse_ops.setup_verification (
+        check_id INT NOT NULL,
+        spark_version STRING NOT NULL,
+        verified_at TIMESTAMP NOT NULL
+    )
+    USING DELTA
+    """
+)
+
+source_schema = StructType(
+    [
+        StructField("check_id", IntegerType(), False),
+        StructField("spark_version", StringType(), False),
+    ]
+)
+
+source_df = (
+    spark.createDataFrame([(1, spark.version)], schema=source_schema)
+    .withColumn("verified_at", current_timestamp())
+)
+source_df.createOrReplaceTempView("setup_verification_source")
+
+spark.sql(
+    """
+    MERGE INTO lakehouse_ops.setup_verification AS target
+    USING setup_verification_source AS source
+    ON target.check_id = source.check_id
+    WHEN MATCHED THEN UPDATE SET
+        target.spark_version = source.spark_version,
+        target.verified_at = source.verified_at
+    WHEN NOT MATCHED THEN INSERT (
+        check_id, spark_version, verified_at
+    ) VALUES (
+        source.check_id, source.spark_version, source.verified_at
+    )
+    """
+)
+
+verification_df = spark.table("lakehouse_ops.setup_verification")
+assert verification_df.filter("check_id = 1").count() == 1
+display(verification_df)
+display(spark.sql("DESCRIBE DETAIL lakehouse_ops.setup_verification"))
+
+# COMMAND ----------
+
+print("=" * 72)
+print("SETUP VERIFIED: DBFS, packages, spark_catalog databases, and Delta MERGE work.")
+print("If Tesseract executable was None, OCR still requires the approved fallback.")
+print("=" * 72)
+```
+
+### 6.1 Attach compute and run all cells
+
+1. Open `notebooks/00_verify_setup.py` from the Git folder.
+2. Attach `pakistan-economy-course` in legacy Community Edition. In current Free Edition select serverless—but remember that the notebook will fail deliberately if DBFS/`spark_catalog` is unavailable.
+3. Select **Run all**.
+4. Wait for the final `SETUP VERIFIED` message.
+5. Confirm that `lakehouse_ops.setup_verification` contains exactly one row with `check_id=1`.
+6. Run the notebook a second time. The Delta `MERGE` must update that row rather than append a duplicate.
+
+### 6.2 Commit the notebook
+
+1. Return to the Git folder.
+2. Review the changed-file list.
+3. Commit only `notebooks/00_verify_setup.py` and intentional documentation/configuration changes.
+4. Use a message such as `chore: add Databricks setup verification notebook`.
+5. Push the feature branch and confirm it on GitHub.
+
+**Checkpoint 6:** Two complete notebook runs succeed, the setup table still has one row, and the notebook is committed to GitHub without secrets or raw data.
+
+## Common problems and exact fixes
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| Signup asks for AWS/Azure/GCP or billing | You entered the full trial flow | Close it and use the official Free Edition signup link in Step 1. |
+| There is no **Create cluster** button | You have current serverless-only Free Edition | Use serverless. A custom DBR/single-node cluster cannot be created there. |
+| `dbfs:/FileStore` returns permission/not-found errors | Legacy DBFS root is disabled in a new workspace | Stop the legacy setup and request the instructor-approved current-storage profile. |
+| Git clone says `Invalid credentials` | Wrong username/token, expired PAT, missing `repo`, or SSO not authorized | Recreate/authorize the GitHub token and update **Settings > Linked accounts**. |
+| Git push is rejected | Branch protection or remote changes | Pull first; push a feature branch and open a pull request. |
+| `%pip` cannot reach PyPI | Serverless outbound-domain restriction or temporary network issue | Retry once; if it persists, use packages already present or ask the instructor for an approved dependency path. |
+| `ModuleNotFoundError` after restart | Ephemeral Python environment/libraries not restored | Run the `%pip` cell again or verify cluster Libraries show Installed. |
+| `pytesseract` imports but OCR fails | The Tesseract executable is absent | Use the approved local OCR/manual validation fallback; the wrapper alone is insufficient. |
+| `SHOW DATABASES IN spark_catalog` fails | Current Free Edition/Unity Catalog rather than legacy Hive Metastore | Stop and use instructor-approved current catalog names; do not rewrite the course SQL silently. |
+| Database location is unexpected | Database existed before this setup | Do not drop it. Show `DESCRIBE DATABASE EXTENDED` to the instructor and select an isolated name/location. |
+| Files under `/tmp` vanished | They were on driver-local storage | Re-upload/recreate them under DBFS staging and persist outputs to Delta. |
+| Cluster terminated while you were away | Expected inactivity behavior in the legacy lab | Restart it, rerun dependency/setup cells, and continue from persisted DBFS/Delta state. |
+| Delta `MERGE` creates duplicates | Source has duplicate keys or the merge predicate is wrong | Stop pipeline work; deduplicate/quarantine the source and merge on the documented business key. |
+
+## Final completion checklist
+
+- [ ] I used the no-cost Free Edition/legacy course workspace, not a 14-day full cloud trial.
+- [ ] I recorded `LEGACY_CE_DBFS` or `CURRENT_FREE_SERVERLESS` from actual capabilities.
+- [ ] The DBFS capability check passed before I followed DBFS instructions.
+- [ ] GitHub is connected through a safely stored, expiring credential.
+- [ ] The repository is cloned as a Git folder/Repo and I work on a feature branch.
+- [ ] Legacy compute uses an available LTS runtime and two-hour auto-termination.
+- [ ] Current Free Edition uses serverless without pretending a DBR version was selected.
+- [ ] `openpyxl`, `pdfplumber`, `pypdf`, `Pillow`, and `pytesseract` import successfully.
+- [ ] I separately checked whether the Tesseract executable exists.
+- [ ] Full and incremental files are visible under the correct staging paths.
+- [ ] I did not use driver-local storage as permanent storage.
+- [ ] The four `lakehouse_*` databases exist at the expected locations.
+- [ ] `notebooks/00_verify_setup.py` succeeds twice without duplicating its Delta row.
+- [ ] No token, secret, raw data, or local CLI configuration was committed to Git.
+
+## Official references
+
+- [Sign up for Databricks Free Edition](https://docs.databricks.com/aws/en/getting-started/free-edition)
+- [Databricks Free Edition limitations](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations)
+- [Connect Git providers to Databricks Git folders](https://docs.databricks.com/aws/en/repos/get-access-tokens-from-git-provider)
+- [Create and manage Databricks Git folders](https://docs.databricks.com/aws/en/repos/git-operations-with-repos)
+- [GitHub personal access token guidance](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens)
+- [Install or update the Databricks CLI](https://docs.databricks.com/aws/en/dev-tools/cli/install)
+- [Databricks CLI authentication](https://docs.databricks.com/aws/en/dev-tools/cli/authentication)
+- [Databricks CLI filesystem commands](https://docs.databricks.com/aws/en/dev-tools/cli/reference/fs-commands)
+- [Databricks DBFS API](https://docs.databricks.com/api/workspace/dbfs)
+- [Databricks Utilities filesystem reference](https://docs.databricks.com/aws/en/dev-tools/databricks-utils)
+- [DBFS root and FileStore](https://docs.databricks.com/aws/en/dbfs/root-locations)
+
+Product capabilities change. This guide records the course-compatible legacy path and the current Free Edition distinction as verified on **2026-10-09**.
