@@ -24,4 +24,10 @@ data/bronze/
 data/silver/
 data/gold/
 data/processed/
+data/staging/
+
+# Local Spark/Delta test output
+spark-warehouse/
+metastore_db/
+derby.log
 

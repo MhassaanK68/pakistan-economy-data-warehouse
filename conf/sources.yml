@@ -1,0 +1,65 @@
+sources:
+  SBP_REMITTANCES:
+    dataset_code: TS_GP_BOP_WR_M
+    format: csv
+    local_folder: sbp_remittances
+    bronze_table: bronze.sbp_remittances_raw
+    silver_table: silver.sbp_remittances
+    expected_unit: Million USD
+    frequency: monthly
+  SBP_FDI:
+    dataset_code: TS_GP_BOP_FDIISIC4_M
+    format: csv
+    local_folder: sbp_fdi
+    bronze_table: bronze.sbp_fdi_raw
+    silver_table: silver.sbp_fdi
+    expected_unit: Million USD
+    frequency: monthly
+  SBP_FX:
+    dataset_code: TS_GP_ES_FADERPKR_M
+    format: csv
+    local_folder: sbp_fx
+    bronze_table: bronze.sbp_fx_raw
+    silver_table: silver.sbp_exchange_rates
+    expected_unit: PKR
+    frequency: daily
+  SBP_EXPORTS:
+    dataset_code: TS_GP_BOP_XRECCOM_M
+    format: csv
+    local_folder: sbp_exports
+    bronze_table: bronze.sbp_exports_raw
+    silver_table: silver.sbp_export_receipts
+    expected_unit: Thousand USD
+    frequency: monthly
+  SBP_IMPORTS:
+    dataset_code: TS_GP_BOP_MRECCOM_M
+    format: csv
+    local_folder: sbp_imports
+    bronze_table: bronze.sbp_imports_raw
+    silver_table: silver.sbp_import_payments
+    expected_unit: Thousand USD
+    frequency: monthly
+  PBS_SPI:
+    dataset_code: PBS_SPI_WEEKLY
+    format: xlsx
+    local_folder: pbs_spi
+    bronze_table: bronze.pbs_spi_raw
+    silver_table: silver.pbs_spi_prices
+    expected_unit: published
+    frequency: weekly
+  PBS_CPI:
+    dataset_code: PBS_CPI_MONTHLY
+    format: pdf
+    local_folder: pbs_cpi
+    bronze_table: bronze.pbs_cpi_raw
+    silver_table: silver.pbs_cpi
+    expected_unit: index
+    frequency: monthly
+  OGRA_FUEL:
+    dataset_code: OGRA_FUEL_PRICES
+    format: pdf
+    local_folder: ogra_fuel
+    bronze_table: bronze.ogra_fuel_prices_raw
+    silver_table: silver.ogra_fuel_prices
+    expected_unit: PKR per litre
+    frequency: ad_hoc

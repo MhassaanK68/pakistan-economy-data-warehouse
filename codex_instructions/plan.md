@@ -30,43 +30,71 @@ The project is complete only when all of the following are true:
 13. A demonstration reruns the same batch twice and proves that the second run inserts/updates zero Silver rows.
 14. A demonstration reprocesses a historical date range without changing hardcoded paths or notebook source code.
 15. A demonstration injects a schema-drift or invalid-type test file and shows the drift/quarantine records and successful completion of unaffected sources.
+16. The implementation follows the zero-cost controls in this plan and cannot create an out-of-pocket cloud bill under the selected default platform.
 
 ## 2. Platform decision
 
-### 2.1 Recommended: Azure Databricks with student credits
+### 2.1 Required zero-cost default: Databricks Free Edition
 
-Use Azure Databricks for the final graded implementation when the student subscription permits it. This path provides the strongest evidence for the required cloud, storage, governance, orchestration, and CI/CD capabilities.
+Use Databricks Free Edition for the final graded implementation. It is the only route in this plan that is no-cost by product design rather than merely being paid from promotional credits. It supplies serverless notebooks, default managed storage, a workspace metastore, Lakeflow jobs/pipelines, and one small SQL warehouse, subject to fair-usage quotas.
 
-Provision:
+This route does not require:
 
-- one Azure resource group;
-- one Azure Databricks workspace;
-- one Azure Data Lake Storage Gen2 account with hierarchical namespace enabled;
-- one storage container for the data lake;
-- a Unity Catalog metastore/catalog where the subscription and tenant permit it;
-- an Azure Databricks access connector or managed identity for ADLS access;
-- job/serverless compute with auto-termination; and
-- a Databricks SQL warehouse for validation and Power BI.
+- an Azure subscription;
+- a credit/debit card;
+- an Azure resource group;
+- ADLS Gen2;
+- classic compute;
+- a paid SQL warehouse; or
+- a paid GitHub plan.
 
-Use the smallest suitable compute and configure cost alerts before processing the full history.
+Use the Free Edition workspace catalog, managed volumes/default storage, serverless PySpark compute, Lakeflow Jobs, and the included single SQL warehouse. If the fair-usage quota is exhausted, work stops until the quota resets; it does not create a bill.
 
-### 2.2 Fallback: Databricks Free Edition
+Free Edition limitations that affect this design:
 
-The legacy Databricks Community Edition was retired in 2025 and replaced by Databricks Free Edition. If Azure student credits or tenant permissions are unavailable, use Free Edition and document the limitation in the submission.
+- serverless compute only;
+- limited compute size and daily/monthly fair-usage quotas;
+- one workspace and one metastore;
+- one SQL warehouse, limited to `2X-Small`;
+- no custom workspace storage location;
+- at most five concurrent job tasks per account;
+- restricted outbound internet access; and
+- no production SLA or enterprise administration features.
 
-Free Edition is acceptable for a coursework prototype, but it is quota-limited, serverless-only, and does not provide all enterprise administration options. Use its workspace catalog and default managed storage. Keep all storage paths behind configuration variables so the same code can later move to Azure ADLS/Unity Catalog without rewriting transformations.
+The plan therefore uses sequential source processing, managed volumes, small fixtures, and manual source upload when an official site is blocked by outbound-network restrictions.
+
+### 2.2 Optional Azure for Students path — zero out-of-pocket, but not zero resource consumption
+
+Azure for Students provides USD 100 of credit for 12 months and does not require a credit card. Azure Databricks usage consumes that credit. This is not the default because it is possible to spend the promotional credit rapidly, and Azure spending limits do not cover every Marketplace/external-service charge.
+
+Use Azure only if the instructor explicitly requires Azure-specific evidence. To preserve zero out-of-pocket cost, all of the following are mandatory:
+
+1. Use an **Azure for Students** subscription, not Pay-As-You-Go.
+2. Confirm the Azure spending limit is active.
+3. Do not remove the spending limit.
+4. Do not add a payment method or upgrade to Pay-As-You-Go.
+5. Do not purchase Marketplace items, paid support, reserved instances, savings plans, or third-party services.
+6. Create only the Databricks workspace and minimum storage required for the demonstration.
+7. Use the smallest job compute, auto-termination, and no idle all-purpose cluster.
+8. Set Azure budget alerts at 25%, 50%, and 75% of the remaining student credit; alerts are monitoring, not a hard cap.
+9. Check remaining student credit before and after every full-history run.
+10. Delete the Azure Databricks workspace, managed resource group resources, storage, and access connector after exporting the submission evidence.
+
+If the Azure portal asks to remove the spending limit, add a card, or upgrade the subscription, stop and use Free Edition instead.
 
 ### 2.3 Decision gate
 
 Complete this gate before writing pipeline code:
 
-- [ ] Azure workspace can be created and opened.
+- [ ] Databricks Free Edition workspace can be created and opened.
 - [ ] A catalog and schema can be created.
 - [ ] A volume can store and read an uploaded test file.
 - [ ] GitHub can be connected through a Databricks Git folder.
 - [ ] A PySpark job can create and query a Delta table.
 - [ ] A workflow/job can be scheduled.
-- [ ] If any item is blocked by Azure permissions or credits, document it and use Free Edition.
+- [ ] The workflow is configured to stay below the five-concurrent-task Free Edition limit.
+- [ ] No paid Azure, Databricks, GitHub, Power BI, Marketplace, or support subscription is required.
+- [ ] If direct source download is blocked, the file is uploaded manually to the managed volume and still registered in the manifest.
 
 ## 3. Target architecture
 
@@ -223,32 +251,39 @@ docs: add runbook data dictionary and submission evidence
 
 ## Step 1 — Create the cloud workspace
 
-### Azure path
-
-1. In Azure Portal, create a resource group such as `rg-pak-economy-dev`.
-2. Create an ADLS Gen2 storage account such as `stpakeconomydev<suffix>`.
-3. Enable hierarchical namespace.
-4. Create a container such as `economy-lake`.
-5. Create the Azure Databricks workspace in the same region.
-6. Create an access connector/managed identity.
-7. Grant the connector only the storage permissions required for the project.
-8. Configure Unity Catalog storage credentials and an external location when account permissions permit it.
-9. Assign a catalog owner and a separate run identity if service principals are available.
-10. Add an Azure budget and alert. Configure compute auto-termination.
-
-### Free Edition path
+### Zero-cost Free Edition path
 
 1. Create a Databricks Free Edition workspace.
 2. Confirm serverless notebook and job compute are available.
-3. Use the default catalog and managed storage.
-4. Create a managed Unity Catalog volume for source files.
-5. Record quota and administrative limitations in `docs/architecture.md`.
+3. Confirm the account shows Free Edition and does not request a cloud subscription or payment method.
+4. Use the workspace catalog/metastore and managed storage supplied by Free Edition.
+5. Create a managed Unity Catalog volume for source, checkpoint, schema, quarantine, and extraction files.
+6. Confirm the included SQL warehouse exists; keep it stopped/idle except during SQL validation and Power BI testing.
+7. Create a tiny notebook and scheduled job to verify PySpark and Lakeflow Jobs.
+8. Record the serverless, quota, storage, network, concurrency, and SLA limitations in `docs/architecture.md`.
+9. Do not start a Databricks free trial, Azure subscription, or paid upgrade for this project.
+
+### Optional Azure for Students path
+
+Use this only when the instructor requires Azure-specific evidence and only while the student spending limit remains active.
+
+1. Verify the subscription offer is `Azure for Students`, remaining credit is positive, and no payment method is required.
+2. Verify the spending limit is active; take a screenshot for private evidence but do not commit billing identifiers.
+3. Create one resource group such as `rg-pak-economy-student`.
+4. Create one minimal Azure Databricks workspace and one minimal ADLS Gen2 storage account only if required.
+5. Use serverless/job compute or the smallest available auto-terminating configuration.
+6. Never run an idle all-purpose cluster.
+7. Add budget alerts and review the Azure Sponsorships balance before each large run.
+8. Do not deploy any Marketplace or third-party paid offer.
+9. Export code, logs, screenshots, and required data before the credit expires.
+10. Delete every resource in the dedicated resource group when the demonstration is complete.
 
 ### Acceptance evidence
 
 - Screenshot or SQL output showing the workspace, catalog, schema, and volume.
 - A notebook cell that writes and reads a small test file from the volume.
 - A query that creates and reads a Delta table.
+- Free Edition account/workspace evidence, or Azure for Students evidence showing the spending limit remains active.
 - The evidence must not expose credentials.
 
 ## Step 2 — Connect GitHub and initialize the Databricks project
@@ -257,10 +292,12 @@ docs: add runbook data dictionary and submission evidence
 2. Configure GitHub authentication through the supported Databricks Git integration.
 3. Confirm pull, branch, commit, and push from the Git folder.
 4. Initialize a Declarative Automation Bundle in the repository root.
-5. Define `dev` and `prod` bundle targets. A coursework project may deploy both to the same workspace but must use separate catalog/schema prefixes.
+5. Define `dev` and `prod` bundle targets, but deploy only to the same Free Edition workspace with separate catalog/schema prefixes; do not create a second paid workspace.
 6. Add `resources/jobs.yml` for the workflow definition.
 7. Run bundle validation before every deployment.
 8. Keep the job/workflow definition in Git; do not create an undocumented production job only through the UI.
+9. Use GitHub Free. Keep GitHub Actions within the included free allowance or run tests locally if the allowance is unavailable.
+10. Do not purchase GitHub-hosted runner minutes, Codespaces, storage add-ons, Marketplace Actions, or a paid GitHub plan.
 
 Example environment naming:
 
@@ -1109,37 +1146,39 @@ Implement two job entry modes using the same task code:
 
 ```text
 00_start_run
-    |
-    +--> 10_ingest_SBP_REMITTANCES -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_SBP_FDI         -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_SBP_FX          -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_SBP_EXPORTS     -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_SBP_IMPORTS     -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_PBS_SPI         -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_PBS_CPI         -> 20_bronze -> 30_silver -> 35_quality
-    +--> 10_ingest_OGRA_FUEL       -> 20_bronze -> 30_silver -> 35_quality
-                                      |
-                                      v
-                              40_build_gold
-                                      |
-                              45_gold_quality
-                                      |
-                              50_publish_ready
+      |
+10_process_sources_sequentially (For each, concurrency = 1)
+      |
+      +-- source 1: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 2: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 3: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 4: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 5: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 6: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 7: ingest -> Bronze -> Silver -> quality -> log
+      +-- source 8: ingest -> Bronze -> Silver -> quality -> log
+      |
+40_build_gold
+      |
+45_gold_quality
+      |
+50_publish_ready
 
 Failure/always-run branches:
   90_finalize_run (ALL_DONE)
   91_notify_failure (AT_LEAST_ONE_FAILED)
 ```
 
-Use a `For each` task for source configuration if available and understandable for the submission; otherwise define explicit tasks so the grader can see each dependency.
+The sequential `For each` design is intentional: Free Edition permits at most five concurrent job tasks, and sequential source processing minimizes quota consumption and avoids competing merges. If `For each` is unavailable, define the eight source tasks as an explicit chain. Do not fan out all eight sources in Free Edition. An optional Azure deployment may use a maximum source concurrency of four, but the zero-cost default remains one.
 
 ### 15.2 Task behavior
 
 - `00_start_run`: validate parameters, create `run_id`, record workflow start, and resolve source list.
-- `10_ingest_*`: discover/download, hash, stage, and register manifest.
-- `20_bronze`: read staged objects with explicit schema and perform insert-only idempotent merge.
-- `30_silver`: cast, validate, quarantine, audit revisions, and merge current state.
-- `35_quality`: execute blocking and warning checks for the source.
+- `10_process_sources_sequentially`: invokes the parameterized source runner once per configured source with concurrency one.
+- `ingest`: discover/download or resolve a manually uploaded file, hash, stage, and register manifest.
+- `Bronze`: read staged objects with explicit schema and perform insert-only idempotent merge.
+- `Silver`: cast, validate, quarantine, audit revisions, and merge current state.
+- `quality`: execute blocking and warning checks for the source.
 - `40_build_gold`: run only after all required source quality tasks succeed.
 - `45_gold_quality`: check fact grain, relationships, and semantic safeguards.
 - `50_publish_ready`: update a publication-state table/view so BI sees only a successful batch.
@@ -1163,8 +1202,10 @@ Do not schedule all full-history sources concurrently during initial loading. Ru
 - Retry transient download/storage errors with bounded exponential backoff.
 - Do not retry deterministic schema/quality failures indefinitely.
 - Set per-source task timeouts.
-- Use job-level maximum concurrent runs of one for the same environment unless overlap is explicitly safe.
+- Set job-level maximum concurrent runs to one.
+- Set `For each` source concurrency to one in Free Edition.
 - Prevent concurrent merges to the same target table or serialize them by source/table.
+- Run full-history sources one at a time and stop if the workspace reports a fair-usage limit.
 
 ## Step 16 — Add unit, integration, and acceptance tests
 
@@ -1244,48 +1285,74 @@ GitHub Actions should:
 3. run unit tests;
 4. scan for accidentally committed secrets;
 5. validate YAML/configuration;
-6. run `databricks bundle validate` against the dev target when credentials are available; and
+6. run offline/static bundle and YAML checks; run `databricks bundle validate` against the Free Edition dev target only when supported authentication is already available; and
 7. block merge on failure.
+
+Use GitHub Actions only within the GitHub Free included allowance. If the repository is private and included minutes are exhausted, run the same commands locally and attach the output to the submission rather than purchasing minutes.
 
 ### Deployment
 
 On merge to `main`:
 
-1. authenticate to Databricks with OAuth/service principal where available;
-2. deploy the bundle to `dev`;
-3. run a smoke-test workflow against test fixtures;
-4. require manual approval for the production target if supported;
-5. deploy the same Git commit to production; and
+1. push and merge the tested Git commit;
+2. pull `main` in the Databricks Free Edition Git folder;
+3. deploy/validate the bundle from the workspace when supported, or update the Git-backed job definition manually from versioned YAML;
+4. run a smoke-test workflow against tiny test fixtures;
+5. deploy the same commit to the separate production schema in the same free workspace; and
 6. store the Git SHA in job tags and execution logs.
 
-Use GitHub encrypted secrets or federated/OAuth authentication. Never place a token in the workflow YAML or repository.
+Free Edition does not require a paid CI service or a production service principal for this coursework workflow. If automated Databricks deployment authentication is unavailable, use the documented manual Git-folder deployment rather than opening a paid Azure environment. If optional Azure automation is used, store credentials only in GitHub encrypted secrets or use federated/OAuth authentication. Never place a token in workflow YAML or the repository.
 
 ## Step 18 — Connect Databricks SQL and Power BI
 
 1. Create approved Gold views in the `gold` schema.
-2. Start the smallest practical SQL warehouse.
+2. Use the single SQL warehouse included with Free Edition; do not create another warehouse or start a paid trial.
 3. Grant the BI identity `USE CATALOG`, `USE SCHEMA`, and `SELECT` only on approved views/tables.
-4. Connect Power BI with the Azure Databricks/Databricks connector.
-5. Use Import mode initially unless DirectQuery is a demonstrated requirement.
-6. Build relationships from all facts to `gold.dim_date`; use a role-playing/inactive relationship for fuel notification date where required.
-7. Relate SBP facts to `gold.dim_series`.
-8. Implement measures that enforce aggregation-level and additivity rules.
-9. Add a data-quality/freshness page showing source, retrieval time, latest observation, last successful run, quarantine count, and revision count.
-10. Do not expose Bronze or unapproved Silver tables directly to Power BI.
+4. Use free Power BI Desktop locally. Do not buy Power BI Pro/Premium or publish to a paid Fabric capacity for this submission.
+5. First attempt the Databricks connector against the Free Edition SQL warehouse. If the workspace restricts external BI connectivity, export only approved Gold views to CSV/Parquet and import those snapshots into Power BI Desktop; document this Free Edition limitation.
+6. Use Import mode to avoid a continuously running connection and unnecessary query consumption.
+7. Build relationships from all facts to `gold.dim_date`; use a role-playing/inactive relationship for fuel notification date where required.
+8. Relate SBP facts to `gold.dim_series`.
+9. Implement measures that enforce aggregation-level and additivity rules.
+10. Add a data-quality/freshness page showing source, retrieval time, latest observation, last successful run, quarantine count, and revision count.
+11. Do not expose Bronze or unapproved Silver tables directly to Power BI.
+12. Store the `.pbix` in the project/submission location; no paid Power BI Service refresh is required.
 
-## Step 19 — Security, governance, and cost controls
+## Step 19 — Security, governance, and zero-cost controls
 
 - Use least-privilege catalog/schema/table permissions.
-- Run production jobs as a service principal where available; separate deploy and run identity.
+- In Free Edition, use the student workspace identity; document that enterprise service-principal separation is an optional production enhancement.
 - Keep secrets in Databricks secret scopes or supported environment authentication.
 - Do not hardcode URLs throughout notebooks; store public endpoints and dataset codes in configuration.
 - Treat any unexpected personal field as schema drift and prevent it from reaching Silver.
 - Keep raw public files immutable, but restrict write access to the ingestion identity.
-- Apply auto-termination and use job/serverless compute.
+- Use only Free Edition serverless compute and the included SQL warehouse.
+- Keep job concurrency at one and never exceed five concurrent tasks.
+- Run the full historical loads one source at a time.
+- Use the repository samples for development and acceptance tests; do not repeatedly process the entire history.
+- Pause work when Free Edition reports a fair-usage limit; wait for the free quota to reset.
+- Do not activate a Databricks free trial, add a payment method, or upgrade the account.
+- Use GitHub Free and Power BI Desktop only.
 - Process incremental/revision windows rather than full history on every schedule.
 - Use small fixtures in CI and development.
 - Optimize Delta tables only after measuring file-count/query issues; do not add complexity without evidence.
-- Tag jobs/warehouses with project and environment names for cost tracking.
+- Do not use external paid OCR, proxy, scraping, notification, storage, or monitoring services. Use local/open-source extraction libraries and Databricks job notifications available in the free workspace.
+- If Azure for Students is used, keep the spending limit active, avoid Marketplace items, check remaining credit before every run, and delete the dedicated resource group at project completion.
+
+### 19.1 Zero-cost stop conditions
+
+Stop the setup and return to Free Edition if any screen or workflow asks for:
+
+- a credit/debit card;
+- Pay-As-You-Go conversion;
+- removal of the Azure spending limit;
+- a paid Databricks trial/upgrade;
+- a paid Power BI/Fabric license;
+- paid GitHub runner minutes or Codespaces;
+- a Marketplace subscription; or
+- a third-party paid API/service.
+
+The project may consume Free Edition quota or Azure student promotional credit, but it must not create an out-of-pocket charge.
 
 ## Step 20 — Source implementation order
 
@@ -1406,7 +1473,11 @@ Exit criteria:
 
 ### Infrastructure and version control
 
-- [ ] Workspace and cloud choice documented.
+- [ ] Databricks Free Edition is the default workspace and the platform choice is documented.
+- [ ] No payment method, paid trial, Pay-As-You-Go upgrade, or Marketplace purchase is attached to the default implementation.
+- [ ] If Azure for Students was used, the spending limit remained active and all project resources were deleted after evidence export.
+- [ ] Free Edition source-task concurrency is one and total concurrent tasks remain below five.
+- [ ] Only GitHub Free and Power BI Desktop are required.
 - [ ] Repository contains all PySpark code and job configuration.
 - [ ] Git history shows continuous milestone commits.
 - [ ] No credentials are committed.
@@ -1450,6 +1521,9 @@ Exit criteria:
 
 - [Databricks Free Edition and the retirement of Community Edition](https://docs.databricks.com/aws/en/getting-started/free-edition)
 - [Databricks Free Edition limitations](https://docs.databricks.com/aws/en/getting-started/free-edition-limitations)
+- [Azure for Students — USD 100 credit and no credit card](https://azure.microsoft.com/en-in/free/students/)
+- [Azure spending-limit behavior and exclusions](https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/spending-limit)
+- [Azure for Students credit exhaustion and subscription disablement](https://learn.microsoft.com/en-us/azure/cost-management-billing/manage/azurestudents-subscription-disabled)
 - [Databricks Git folders](https://docs.databricks.com/aws/en/repos/git-operations-with-repos)
 - [Declarative Automation Bundles](https://docs.databricks.com/aws/en/dev-tools/bundles)
 - [CI/CD workflows with bundles](https://docs.databricks.com/aws/en/dev-tools/ci-cd/flows)
