@@ -11,26 +11,66 @@ This plan converts the proposed Pakistan Economy Data Warehouse into an implemen
 
 The final submission must contain working PySpark code in Databricks and a GitHub repository that can recreate and run the pipeline. The repository must not contain only screenshots or exported notebooks.
 
-### 1.1 Definition of done
+### 1.1 MVP definition of done
 
-The project is complete only when all of the following are true:
+Stop adding features when these items work:
 
-1. A Databricks workspace can run the project from a clean deployment.
-2. All code, configuration, schemas, tests, and documentation are committed to GitHub.
-3. Raw source files are preserved unchanged in governed storage.
-4. Bronze and Silver tables use explicit schemas; no business dataset is read with `inferSchema=True`.
-5. Every Bronze and Silver row contains a non-null `load_timestamp`.
-6. A repeated run over the same raw file does not create duplicate Bronze or Silver rows.
-7. Each Silver table uses a Delta `MERGE INTO`/upsert pattern based on a documented business key.
-8. Full loads, incremental loads, and historical backfills use the same parameterized code.
-9. Unexpected columns, missing required columns, malformed rows, and type failures are recorded and quarantined without silently corrupting a curated table.
-10. Every file/layer execution writes start time, end time, status, input parameter/file, and row metrics to an operational logging table.
-11. Data-quality tests reconcile source-to-Bronze and Bronze-to-Silver counts and validate uniqueness, required fields, dates, units, and lineage.
-12. Gold tables/views can be queried from Databricks SQL and connected to Power BI.
-13. A demonstration reruns the same batch twice and proves that the second run inserts/updates zero Silver rows.
-14. A demonstration reprocesses a historical date range without changing hardcoded paths or notebook source code.
-15. A demonstration injects a schema-drift or invalid-type test file and shows the drift/quarantine records and successful completion of unaffected sources.
-16. The implementation follows the zero-cost controls in this plan and cannot create an out-of-pocket cloud bill under the selected default platform.
+1. Databricks Free Edition can run the five SBP CSV sources.
+2. All implementation files are committed to GitHub.
+3. Original files are preserved unchanged in the managed Volume.
+4. Bronze and Silver use explicit schemas; `inferSchema=True` is never used.
+5. Every Bronze and Silver row has `load_timestamp` and source lineage.
+6. Re-running the same file does not increase Bronze or Silver row counts.
+7. Silver writes use Delta `MERGE` with a documented business key.
+8. Bad rows go to quarantine without blocking valid rows.
+9. Every Bronze and Silver attempt writes status and row counts to the execution log.
+10. A historical file can be replayed using notebook parameters without editing code.
+11. One sequential Databricks Job runs all five SBP sources successfully.
+12. One Gold SQL view returns clean data for an internal analyst.
+
+Incremental source discovery, PBS/OGRA document extraction, advanced revision
+auditing, a full Gold star schema, Power BI automation, and CI/CD are completion
+criteria for later phases—not for the first internal MVP.
+
+### 1.2 Internal MVP scope — keep the first version small
+
+This is an internal learning MVP, not a production platform. Build the smallest
+version that demonstrates the required engineering ideas clearly.
+
+**Build now:**
+
+- Databricks Free Edition only;
+- the five structured SBP CSV datasets;
+- manual upload of the supplied historical files;
+- one managed Volume for staged files;
+- Bronze and Silver Delta tables;
+- explicit PySpark schemas and casts;
+- one quarantine table and one execution-log table;
+- parameterized full-load/backfill execution;
+- idempotent Bronze and Silver `MERGE` operations;
+- one simple Gold SQL view for demonstration; and
+- one manually triggered Databricks Job that runs the five SBP sources in sequence.
+
+**Do not build in the first MVP:**
+
+- automated web scraping or API discovery;
+- Auto Loader, Delta Live Tables, or streaming;
+- Azure infrastructure;
+- separate development and production workspaces;
+- Databricks Asset Bundles;
+- automated CI/CD deployment;
+- parallel job execution;
+- complex dimensional models or seven Gold facts;
+- Power BI refresh automation; or
+- Excel/PDF/OCR extraction for PBS and OGRA.
+
+The PBS SPI workbooks, PBS CPI PDF, and OGRA PDF are still staged, hashed, and
+documented. Their extraction is Phase 2 because document parsing adds layout,
+OCR, and validation risks that are not needed to prove the MVP pipeline.
+
+The core assignment techniques can be demonstrated by the SBP vertical slice:
+real files, explicit schemas, Bronze/Silver modeling, timestamps, quarantine,
+logging, parameters, and `MERGE`. Add more sources only after this path works.
 
 ## 2. Platform decision
 
@@ -99,41 +139,42 @@ Complete this gate before writing pipeline code:
 ## 3. Target architecture
 
 ```text
-SBP EasyData CSVs ─┐
-PBS SPI Excel ─────┼─> source adapters / file discovery
-PBS CPI PDFs ──────┤        |
-OGRA scanned PDFs ─┘        v
-                    Unity Catalog Volume / ADLS staging
-                    immutable file + SHA-256 + manifest
-                              |
-                              v
-                    Bronze Delta tables
-                    explicit schema + raw values + lineage
-                              |
-                              v
-                    Silver Delta current-state tables
-                    strict casts + validation + deduplication
-                    revision-aware MERGE + quarantine
-                              |
-                              v
-                    Gold dimensions, facts, and approved views
-                              |
-                              v
-                    Databricks SQL Warehouse -> Power BI
-
-Cross-cutting control plane:
-  raw_file_manifest | pipeline_execution_logs | data_quality_results
-  schema_drift_events | observation_revision_audit | quarantine
+Five SBP CSV files
+        |
+        | manual upload for the MVP
+        v
+Databricks Volume (original files, unchanged)
+        |
+        v
+Bronze Delta tables (raw strings + lineage + load_timestamp)
+        |
+        v
+Silver Delta tables (dates/numbers cast + MERGE + load_timestamp)
+        |
+        +----> quarantine table
+        +----> pipeline execution log
+        |
+        v
+One simple Gold SQL view for the demo
 ```
+
+Think of the layers this way:
+
+- **Staging:** the original file exactly as received.
+- **Bronze:** the file converted into rows, but values are still mostly strings.
+- **Silver:** clean dates and numbers, one row per business key, safe to query.
+- **Gold:** a small user-facing query/view, not another large engineering project.
 
 ### 3.1 Databricks responsibilities
 
-- **Lakeflow Jobs/Databricks Workflows:** orchestration, dependencies, parameters, schedules, retries, and alerts.
-- **Unity Catalog volumes:** governance for original CSV, Excel, PDF, checkpoint, schema, and quarantine files.
-- **Delta Lake:** ACID tables, Bronze idempotency, Silver `MERGE`, revision history, and operation metrics.
-- **Apache Spark/PySpark:** explicit-schema reads, normalization, validation, deduplication, and aggregation.
-- **Databricks SQL:** approved Gold access, operational dashboards, and Power BI connectivity.
-- **Git folders plus Declarative Automation Bundles:** GitHub-backed development, versioned job definitions, deployment, and CI/CD.
+- **Git folder:** opens the GitHub repository inside Databricks.
+- **Volume:** stores the original files without changing them.
+- **Serverless notebook compute:** runs the PySpark code.
+- **Delta Lake:** stores Bronze/Silver tables and supports `MERGE`.
+- **Databricks Job:** runs five notebook tasks in a simple sequence.
+- **SQL Editor:** creates objects and validates results.
+
+Asset Bundles, CI/CD, alerts, streaming, and complex scheduling are Phase 2.
 
 ## 4. Repository and branching design
 
@@ -247,9 +288,308 @@ feat: add Lakeflow Job orchestration and audit finalizer
 docs: add runbook data dictionary and submission evidence
 ```
 
-## 5. Step-by-step implementation
+## 5. Beginner step-by-step implementation — follow this exact order
 
-## Step 1 — Create the cloud workspace
+Do not attempt the later reference sections all at once. Complete each checkpoint
+below before moving to the next one. When a checkpoint fails, fix it while the
+problem is still small.
+
+### MVP file map
+
+Only these files are needed for the first working version:
+
+| File | What it does | When you use it |
+| --- | --- | --- |
+| `scripts/prepare_full_load.py` | copies and hashes local raw files | once before upload |
+| `conf/sources.yml` | lists source IDs and target tables | reference/configuration |
+| `sql/create_catalog_objects.sql` | creates schemas, Volume, logs, and quarantine | once in Databricks SQL |
+| `notebooks/10_full_load.py` | Databricks entry notebook | once per SBP source |
+| `src/pakistan_economy/bronze/sbp.py` | reads CSV with an explicit schema | called by the notebook |
+| `src/pakistan_economy/silver/sbp.py` | casts and validates columns | called by the notebook |
+| `src/pakistan_economy/merge.py` | performs idempotent Delta merges | called by the notebook |
+| `src/pakistan_economy/logging.py` | records start/end status and row metrics | called automatically |
+| `docs/full_load_runbook.md` | short operator instructions | keep open while working |
+
+### Before opening Databricks — prepare the files locally
+
+1. Open PowerShell in the repository folder.
+2. Confirm the raw files exist:
+
+   ```powershell
+   Get-ChildItem data/raw/full -Recurse -File
+   ```
+
+3. Run the staging script. Use a batch ID that never contains spaces:
+
+   ```powershell
+   python scripts/prepare_full_load.py `
+     --input-root data/raw/full `
+     --staging-root data/staging `
+     --batch-id full_20261008_001 `
+     --ingest-date 2026-10-08
+   ```
+
+4. Expected output: `"files": 9` and `"LANDED": 9`. If the same command is
+   run again, expected output is `"SKIPPED_IDENTICAL": 9`.
+5. Open `data/staging/_manifests/full_20261008_001.jsonl`. Each line contains
+   the `source_id`, `manifest_id`, `sha256_hash`, and staged filename needed by
+   the notebook.
+6. Do not edit anything under `data/staging`. If a source file changes, use a
+   new batch ID instead of overwriting the old staged file.
+
+**Checkpoint A:** nine staged files exist and the second run reports nine
+identical files.
+
+### First Databricks session — create only the required objects
+
+1. Sign in to Databricks Free Edition.
+2. In the left sidebar, open **SQL Editor**. If the SQL warehouse is stopped,
+   start the included warehouse and wait until its status is Running.
+3. Copy the contents of `sql/create_catalog_objects.sql` into a new query.
+4. Leave `workspace` as the catalog unless your Free Edition workspace shows a
+   different writable catalog. If it does, replace every `workspace` in the SQL
+   file and in later notebook parameters with that catalog name.
+5. Click **Run all**.
+6. Open **Catalog** in the sidebar and check that these objects exist:
+
+   ```text
+   workspace
+     ops
+       economy_lake       (Volume)
+       pipeline_execution_logs
+       quarantined_records
+     bronze
+     silver
+     gold
+   ```
+
+7. Stop the SQL warehouse when this check is complete. Starting it later for a
+   short validation query is fine and remains within Free Edition.
+
+**Checkpoint B:** the four schemas, Volume, and two operational tables are
+visible in Catalog Explorer.
+
+### Connect the repository
+
+1. In Databricks, open **Workspace**.
+2. Click **Create** and choose **Git folder**.
+3. Select GitHub and enter:
+   `https://github.com/MhassaanK68/pakistan-economy-data-warehouse.git`.
+4. Choose the branch containing the implementation. During development this is
+   `feature/full-load-pipeline`; after merging, use `main`.
+5. Open the created Git folder and confirm that `notebooks`, `src`, `sql`, and
+   `conf` are visible.
+6. Do not configure Asset Bundles for the MVP. The Git folder is sufficient for
+   version control and keeps the first deployment understandable.
+
+**Checkpoint C:** `notebooks/10_full_load.py` opens inside Databricks.
+
+### Upload the staged files to the Volume
+
+1. Open **Catalog** → `workspace` → `ops` → `economy_lake`.
+2. Create a `staging` directory if it does not already exist.
+3. Recreate the local partition folders under the Volume and upload the files.
+   The SBP remittance file, for example, must end at:
+
+   ```text
+   /Volumes/workspace/ops/economy_lake/staging/
+     source=SBP_REMITTANCES/
+       ingest_date=2026-10-08/
+         batch_id=full_20261008_001/
+           dataset.csv
+   ```
+
+4. Repeat this for all nine files. Only the five `SBP_*` folders are processed
+   in the MVP; the PBS/OGRA files are preserved for Phase 2.
+5. In a small notebook cell, verify one upload:
+
+   ```python
+   display(dbutils.fs.ls(
+       "/Volumes/workspace/ops/economy_lake/staging/source=SBP_REMITTANCES/"
+       "ingest_date=2026-10-08/batch_id=full_20261008_001/"
+   ))
+   ```
+
+**Checkpoint D:** Databricks lists the uploaded CSV and its file size is the
+same as the local manifest.
+
+### Run one source manually before creating a Job
+
+Start with `SBP_REMITTANCES`; do not run all sources yet.
+
+1. Open `notebooks/10_full_load.py` from the Git folder.
+2. Choose the default serverless Python compute when prompted.
+3. Click **Run all** once so the text widgets appear at the top.
+4. Fill the widgets as follows. Copy `manifest_id` and `source_file_hash` from
+   the matching JSONL manifest line—do not shorten the hash.
+
+   | Widget | First-run value |
+   | --- | --- |
+   | `catalog` | `workspace` |
+   | `source_id` | `SBP_REMITTANCES` |
+   | `input_path` | `/Volumes/workspace/ops/economy_lake/staging/source=SBP_REMITTANCES/ingest_date=2026-10-08/batch_id=full_20261008_001/dataset.csv` |
+   | `batch_id` | `full_20261008_001` |
+   | `run_id` | leave blank; the notebook generates one |
+   | `manifest_id` | value from the manifest |
+   | `source_file_hash` | full SHA-256 value from the manifest |
+   | `source_snapshot_at` | `2026-10-08T00:00:00` |
+   | `retrieved_at_utc` | value from the manifest |
+   | `code_version` | current Git commit from `git rev-parse --short HEAD` |
+
+5. Click **Run all** again.
+6. Read the final JSON output. It should show a positive `rows_read` and
+   `bronze_inserted`/`silver_inserted` counts. `quarantined` should normally be
+   zero, but a non-zero count is acceptable only after inspecting the reason.
+7. Open Catalog Explorer and preview:
+
+   ```text
+   workspace.bronze.sbp_remittances_raw
+   workspace.silver.sbp_remittances
+   workspace.ops.pipeline_execution_logs
+   ```
+
+8. Confirm that Bronze and Silver both contain a non-null `load_timestamp`.
+
+**Checkpoint E:** one file has travelled from Volume → Bronze → Silver, and two
+successful log entries exist for the batch.
+
+### Run the other four SBP files
+
+Use the same notebook and change only the source-specific values. Filenames are
+shown here so that spaces and parentheses are not guessed.
+
+| `source_id` | Volume filename | Silver table |
+| --- | --- | --- |
+| `SBP_FDI` | `dataset (2).csv` | `silver.sbp_fdi` |
+| `SBP_FX` | `dataset (4).csv` | `silver.sbp_exchange_rates` |
+| `SBP_EXPORTS` | `dataset (6).csv` | `silver.sbp_export_receipts` |
+| `SBP_IMPORTS` | `dataset (8).csv` | `silver.sbp_import_payments` |
+
+For each source:
+
+1. Copy its manifest ID and full hash from the JSONL file.
+2. Update `source_id` and `input_path`.
+3. Keep the same `batch_id` for this historical load.
+4. Run the notebook.
+5. Do not continue to the next source until the current source has Bronze,
+   Silver, and successful execution-log rows.
+
+**Checkpoint F:** all five SBP Silver tables exist and each source has two log
+rows: `STAGING → BRONZE` and `BRONZE → SILVER`.
+
+### Prove idempotency
+
+1. Record the row count of one Silver table:
+
+   ```sql
+   SELECT count(*) FROM workspace.silver.sbp_remittances;
+   ```
+
+2. Run the remittance notebook again with exactly the same parameters.
+3. Run the count query again. It must be unchanged.
+4. Query the latest logs. The second run must show zero new Bronze and Silver
+   inserts; updates must also be zero.
+5. Repeat this proof for at least one daily source (`SBP_FX`).
+
+**Checkpoint G:** repeated input produces no duplicate rows.
+
+### Prove backfill and schema handling
+
+For the MVP, “backfill” means replaying an explicitly selected historical file
+or batch; it does not require a second code path.
+
+1. Choose a historical staged path and pass it through `input_path` with its
+   original manifest/hash metadata.
+2. Confirm that no source-code date needs to be edited.
+3. For an extra-column test, create a small CSV fixture under `tests/fixtures`
+   with the normal header plus `Unexpected Column`. The known fields should load
+   and `_rescued_data` should contain the extra value.
+4. For a missing-column test, remove `Observation Value` from a fixture header.
+   The source branch should fail, and `pipeline_execution_logs` must contain a
+   `FAILED` row with the error class/message.
+5. For a bad-type test, place `not-a-number` in `Observation Value`. Bronze must
+   retain the string, while Silver sends the row to `quarantined_records`.
+
+**Checkpoint H:** backfill uses parameters, additive drift is rescued, missing
+required fields are logged as failure, and bad types are quarantined.
+
+### Create one simple Databricks Job
+
+Do this only after all five sources work manually.
+
+1. Open **Workflows** → **Jobs & Pipelines** → **Create job**.
+2. Name it `pakistan_economy_mvp_full_load`.
+3. Create task `01_sbp_remittances` using `notebooks/10_full_load.py`, serverless
+   compute, and the tested remittance parameters.
+4. Add `02_sbp_fdi` and set **Depends on** to `01_sbp_remittances`.
+5. Add `03_sbp_fx`, depending on `02_sbp_fdi`.
+6. Add `04_sbp_exports`, depending on `03_sbp_fx`.
+7. Add `05_sbp_imports`, depending on `04_sbp_exports`.
+8. Set maximum concurrent runs to `1`. Do not add a schedule yet.
+9. Click **Run now** and inspect each task result.
+10. Save screenshots of the green task chain and the execution-log query for
+    project evidence.
+
+This deliberately simple five-task chain is easier to understand than a loop,
+fan-out graph, or dynamic bundle. Add scheduling only after the manual MVP demo
+is stable.
+
+**Checkpoint I:** one manual Job run processes all five sources sequentially.
+
+### Add one minimal Gold view
+
+Do not build a star schema for the MVP. Create one view that proves Silver can
+serve an internal analyst:
+
+```sql
+CREATE OR REPLACE VIEW workspace.gold.v_latest_exchange_rates AS
+SELECT
+  observation_date,
+  series_key,
+  series_display_name,
+  observation_value,
+  unit,
+  source_snapshot_at,
+  load_timestamp
+FROM workspace.silver.sbp_exchange_rates
+WHERE observation_date = (
+  SELECT max(observation_date)
+  FROM workspace.silver.sbp_exchange_rates
+);
+```
+
+Run `SELECT * FROM workspace.gold.v_latest_exchange_rates`. If it returns clean
+rows, the MVP is complete. Power BI, more Gold models, scheduling, documents,
+and automated deployment are separate follow-up phases.
+
+### Beginner troubleshooting guide
+
+- **`TABLE_OR_VIEW_NOT_FOUND`:** run `sql/create_catalog_objects.sql` and check
+  that the notebook `catalog` widget matches the catalog used in SQL.
+- **`PATH_NOT_FOUND`:** copy the exact path from Catalog Explorer; spaces and
+  parentheses in filenames matter.
+- **Import error for `pakistan_economy`:** confirm the notebook is opened from
+  the Git folder and that the repository contains the `src` directory.
+- **All rows quarantined:** preview Bronze and compare the date/value strings
+  with the formats in `src/pakistan_economy/config.py`.
+- **Schema error:** compare the CSV header with `SBP_RAW_COLUMNS` in
+  `src/pakistan_economy/schemas.py`.
+- **Second run inserts rows:** confirm that the exact same full SHA-256 and
+  staged file were used; then inspect the business key and `record_hash`.
+- **Free Edition quota message:** stop and wait for quota reset. Do not create a
+  paid workspace as a workaround.
+
+The remaining sections are the detailed technical reference and Phase 2
+backlog. They explain how to expand the MVP but are not all required before the
+first successful demonstration.
+
+## 6. Phase 2 technical reference — not the beginner execution checklist
+
+Everything below this heading is reference material for hardening or expanding
+the project after Checkpoints A–I work. Do not treat it as another list that
+must be completed before running the MVP.
+
+## Reference Step 1 — Create the cloud workspace
 
 ### Zero-cost Free Edition path
 
@@ -286,7 +626,7 @@ Use this only when the instructor requires Azure-specific evidence and only whil
 - Free Edition account/workspace evidence, or Azure for Students evidence showing the spending limit remains active.
 - The evidence must not expose credentials.
 
-## Step 2 — Connect GitHub and initialize the Databricks project
+## Reference Step 2 — Add deployment automation later
 
 1. Create a Databricks Git folder by cloning the GitHub repository.
 2. Configure GitHub authentication through the supported Databricks Git integration.
@@ -312,7 +652,7 @@ schemas per catalog:
   gold
 ```
 
-## Step 3 — Create governed storage and namespaces
+## Reference Step 3 — Expand governed storage and namespaces
 
 Create the following volume structure. Do not use a developer home folder or a rigid date-specific DBFS path as the production landing zone.
 
@@ -339,7 +679,7 @@ Rules:
 - Checkpoint and schema-location paths are unique per ingestion workload.
 - Paths are constructed by configuration functions; notebook code must not embed a fixed processing date.
 
-## Step 4 — Create the source registry
+## Reference Step 4 — Expand the source registry
 
 Create `conf/sources.yml` as the single configuration point for dataset codes, formats, schedules, lookbacks, and paths.
 
@@ -371,7 +711,7 @@ Each entry must also declare:
 
 Do not treat portal session IDs or checksums captured in old SBP links as reusable automation endpoints. Until a stable endpoint is verified, support a controlled manual upload mode that still registers the official landing-page URL and the acquisition metadata.
 
-## Step 5 — Implement parameter handling
+## Reference Step 5 — Generalize parameter handling
 
 Every task entry notebook/script must accept the same core parameter contract:
 
@@ -398,7 +738,7 @@ Parameter rules:
 6. A historical file can be replayed by `batch_id`, date range, source file hash, or explicit path.
 7. Generate one `run_id` for the overall workflow and one `execution_log_id` for each task/file/layer operation.
 
-## Step 6 — Create the operational tables first
+## Reference Step 6 — Add the complete operational model
 
 Operational tables are required before the first source is processed.
 
@@ -495,7 +835,7 @@ Required fields: `drift_event_id`, `run_id`, `batch_id`, `source_id`, `source_fi
 
 Required fields: `revision_audit_id`, `run_id`, `target_table`, `business_key_json`, `old_record_hash`, `new_record_hash`, `old_values_json`, `new_values_json`, `old_source_file_hash`, `new_source_file_hash`, `old_source_snapshot_at`, `new_source_snapshot_at`, `revision_detected_at_utc`, and `load_timestamp`.
 
-## Step 7 — Implement source acquisition and immutable staging
+## Reference Step 7 — Automate source acquisition later
 
 Create a common source-adapter interface:
 
@@ -525,7 +865,7 @@ Source-specific acquisition rules:
 - **PBS CPI:** discover the official PDF link; preserve the PDF unchanged before extracting Tables 1–3 and Annexures A–B.
 - **OGRA:** discover notification links; preserve the scanned PDF; distinguish notification date from effective date.
 
-## Step 8 — Implement explicit PySpark schemas
+## Reference Step 8 — Full schema dictionaries
 
 All business data schemas must be declared in `src/pakistan_economy/schemas.py` with `StructType` and `StructField`. Do not use `inferSchema=True`.
 
@@ -916,7 +1256,7 @@ Common Silver rules:
 | `load_timestamp` | TIMESTAMP | no | Silver processing time |
 | `updated_at_utc` | TIMESTAMP | no | last accepted change |
 
-## Step 9 — Implement idempotent Bronze writes
+## Reference Step 9 — Harden idempotent Bronze writes
 
 Bronze is append-oriented but must still avoid duplicate rows from a repeated task.
 
@@ -940,7 +1280,7 @@ target.alias("t").merge(
 
 For document tables, replace `source_record_number` with the documented page/sheet/row composite.
 
-## Step 10 — Implement Bronze-to-Silver transformation
+## Reference Step 10 — Extend Bronze-to-Silver transformations
 
 For each Silver dataset:
 
@@ -980,7 +1320,7 @@ invalid = typed.filter(
 )
 ```
 
-## Step 11 — Implement revision-aware Silver `MERGE INTO`
+## Reference Step 11 — Add revision-aware Silver `MERGE INTO`
 
 Before the merge, incoming data must be unique on the business key. Use a deterministic window ordered by `source_snapshot_at DESC`, then `retrieved_at_utc DESC`, then `source_file_hash DESC` to select the latest candidate.
 
@@ -1027,7 +1367,7 @@ metrics = (
 
 Map `numTargetRowsInserted` and `numTargetRowsUpdated` to the logging table. If a runtime returns different metric keys, normalize them in one shared helper and unit-test the helper.
 
-## Step 12 — Implement schema-drift handling
+## Reference Step 12 — Expand schema-drift handling
 
 The default policy for this project is **rescue/quarantine, not automatic silent evolution of curated tables**.
 
@@ -1054,7 +1394,7 @@ The default policy for this project is **rescue/quarantine, not automatic silent
 
 If Auto Loader is used, provide the explicit schema and configure a rescued-data column. Do not enable broad automatic Silver schema evolution. Each independent Auto Loader source must have its own checkpoint/schema location.
 
-## Step 13 — Implement data-quality checks
+## Reference Step 13 — Expand data-quality checks
 
 Run the following checks for every source/batch and write each result to `ops.data_quality_results`:
 
@@ -1106,7 +1446,7 @@ Define blocking severity:
 - `WARNING`: allow the branch but mark it partial and expose the issue.
 - `INFO`: operational observation only.
 
-## Step 14 — Build Gold dimensions and facts
+## Reference Step 14 — Build a full Gold model later
 
 Do not start Gold until each source-specific Silver table passes uniqueness, completeness, unit, lineage, and revision tests.
 
@@ -1135,7 +1475,7 @@ Gold rules:
 7. Preserve `record_hash`, `source_file_hash`, and `source_snapshot_at` in facts or drill-through views.
 8. Use incremental Gold merges based on affected Silver business keys rather than rebuilding all history for each small load, unless the table size makes a full rebuild simpler and it is documented.
 
-## Step 15 — Create the Databricks orchestration
+## Reference Step 15 — Advanced Databricks orchestration
 
 Implement two job entry modes using the same task code:
 
@@ -1207,7 +1547,7 @@ Do not schedule all full-history sources concurrently during initial loading. Ru
 - Prevent concurrent merges to the same target table or serialize them by source/table.
 - Run full-history sources one at a time and stop if the workspace reports a fair-usage limit.
 
-## Step 16 — Add unit, integration, and acceptance tests
+## Reference Step 16 — Expand unit, integration, and acceptance tests
 
 ### 16.1 Unit tests
 
@@ -1274,7 +1614,7 @@ Use small fixture files copied from the repository samples:
 2. Prove the execution log has start and end time, `FAILED` status, input identifier, and sanitized error.
 3. Prove the overall workflow finalizer still runs.
 
-## Step 17 — Configure CI/CD
+## Reference Step 17 — Configure CI/CD later
 
 ### Pull-request validation
 
@@ -1303,7 +1643,7 @@ On merge to `main`:
 
 Free Edition does not require a paid CI service or a production service principal for this coursework workflow. If automated Databricks deployment authentication is unavailable, use the documented manual Git-folder deployment rather than opening a paid Azure environment. If optional Azure automation is used, store credentials only in GitHub encrypted secrets or use federated/OAuth authentication. Never place a token in workflow YAML or the repository.
 
-## Step 18 — Connect Databricks SQL and Power BI
+## Reference Step 18 — Connect Power BI later
 
 1. Create approved Gold views in the `gold` schema.
 2. Use the single SQL warehouse included with Free Edition; do not create another warehouse or start a paid trial.
@@ -1318,7 +1658,7 @@ Free Edition does not require a paid CI service or a production service principa
 11. Do not expose Bronze or unapproved Silver tables directly to Power BI.
 12. Store the `.pbix` in the project/submission location; no paid Power BI Service refresh is required.
 
-## Step 19 — Security, governance, and zero-cost controls
+## Reference Step 19 — Production-style security and governance
 
 - Use least-privilege catalog/schema/table permissions.
 - In Free Edition, use the student workspace identity; document that enterprise service-principal separation is an optional production enhancement.
@@ -1354,7 +1694,7 @@ Stop the setup and return to Free Edition if any screen or workflow asks for:
 
 The project may consume Free Edition quota or Azure student promotional credit, but it must not create an out-of-pocket charge.
 
-## Step 20 — Source implementation order
+## Reference Step 20 — Phase 2 source implementation order
 
 Implement sources in this order so the reusable framework is proven on the simplest reliable format before document extraction:
 
@@ -1384,7 +1724,7 @@ Implement sources in this order so the reusable framework is proven on the simpl
 6. **Gold and Power BI**
    - only after all Silver sources reconcile successfully.
 
-## Step 21 — Delivery milestones
+## Reference Step 21 — Full product delivery milestones
 
 ### Milestone 1 — Foundation
 
@@ -1469,7 +1809,7 @@ Exit criteria:
 
 - another person can follow the README and deploy/run the project without undocumented manual code edits.
 
-## Step 22 — Submission checklist
+## Reference Step 22 — Expanded submission checklist
 
 ### Infrastructure and version control
 
