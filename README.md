@@ -2,6 +2,8 @@
 
 This project builds a simple data pipeline and BI system for investment companies in Pakistan. It collects public economic data and turns it into clean information that analysts can use when studying investment conditions.
 
+-- Test Line
+
 ## Project Goal
 
 The system will combine important economic indicators in one place. It will help analysts study inflation, exchange rates, reserves, trade, remittances, interest rates, foreign investment, and fuel prices.
