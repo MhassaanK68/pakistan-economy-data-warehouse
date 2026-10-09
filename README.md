@@ -1,62 +1,213 @@
-# Pakistan Investment & Macroeconomic Intelligence Platform
+# CareWatch: U.S. Nursing Home Quality Warehouse
 
-This project builds a simple data pipeline and BI system for investment companies in Pakistan. It collects public economic data and turns it into clean information that analysts can use when studying investment conditions.
+CareWatch is a data engineering and business intelligence project for analysing the quality and regulatory performance of Medicare- and Medicaid-certified nursing homes in the United States.
 
--- Test Line
+The project uses public datasets from the Centers for Medicare & Medicaid Services (CMS), processes them through a Bronze–Silver–Gold lakehouse architecture with PySpark and Delta Lake, and prepares business-ready data for Power BI.
 
-## Project Goal
+CareWatch is an analytical decision-support system. It does not provide medical advice or replace official CMS records.
 
-The system will combine important economic indicators in one place. It will help analysts study inflation, exchange rates, reserves, trade, remittances, interest rates, foreign investment, and fuel prices.
+## Project goals
 
-The dashboard will support research and analysis. It will not give direct buy or sell recommendations.
+CareWatch is designed to help families, healthcare regulators, nursing-home operators, investors, and analysts answer questions such as:
 
-## Data Sources
+- Which facilities have the most serious or repeated deficiencies?
+- Which states, ownership types, or facility chains have weaker quality and compliance outcomes?
+- How do staffing levels and staff turnover relate to quality ratings?
+- Which facilities receive the largest fines or payment denials?
+- How do deficiencies, penalties, and quality measures change over time?
 
-The main sources are:
+## Data sources
 
-- Pakistan Bureau of Statistics (PBS)
-- State Bank of Pakistan (SBP)
-- Oil and Gas Regulatory Authority (OGRA)
+The source is the [CMS Provider Data Catalog](https://data.cms.gov/provider-data/), accessed through its bulk CSV downloads and public APIs.
 
-The project will use historical data for the first full load. After that, it will load only new or changed daily, weekly, or monthly records.
+The project currently uses four datasets:
 
-## Medallion Architecture
+- **Provider Information** (`4pq5-n9py`): facility identity, location, ownership type, beds, ratings, staffing, turnover, and chain information.
+- **Health Deficiencies** (`r5ix-sfxw`): inspection citations, deficiency categories, severity, survey dates, and correction status.
+- **Penalties** (`g6vv-u9sr`): fines and payment-denial events.
+- **MDS Quality Measures** (`djen-97ju`): quarterly and four-quarter resident quality measures.
+
+The common facility join key is `cms_certification_number_ccn` (CCN).
+
+## Architecture
+
+```text
+CMS API and bulk CSV files
+            |
+            v
+Bronze: raw source-shaped records and ingestion metadata
+            |
+            v
+Silver: typed, validated, privacy-treated, deduplicated records
+            |
+            v
+Gold: facts, dimensions, scorecards, and BI aggregates
+            |
+            v
+Power BI dashboards
+```
 
 ### Bronze
-Stores raw files from the original sources with load metadata.
+
+Bronze preserves source values as strings and adds operational metadata such as the source file, batch ID, load type, ingestion date, and `load_timestamp`. Bronze data is append-only so every ingestion event remains auditable.
 
 ### Silver
-Cleans the data, fixes data types, standardizes dates and units, removes duplicates, and handles missing values.
+
+Silver applies explicit data types, standardises names and categories, validates business keys, removes duplicates, and uses Delta `MERGE` for idempotent inserts and updates. Invalid records are routed to quarantine rather than silently discarded.
+
+Sensitive contact fields are excluded from analytical outputs. Street addresses are intended to be hashed with a securely supplied salt before publication to Silver.
 
 ### Gold
-Creates simple fact and dimension tables and summary tables for Power BI.
 
-## Business Intelligence
+The planned Gold model contains:
 
-The Power BI dashboard will help answer questions such as:
+- `dim_facility`
+- `dim_geography`
+- `dim_date`
+- `dim_deficiency`
+- `fact_deficiency`
+- `fact_penalty`
+- `fact_facility_snapshot`
+- state-quality, ownership-comparison, facility-risk, and deficiency-trend aggregates
 
-- Is inflation rising or falling?
-- Is the Pakistani rupee becoming stronger or weaker?
-- Are foreign exchange reserves improving?
-- Which sectors are receiving more foreign investment?
-- How are imports, exports, and remittances changing?
-- Are fuel costs creating pressure on businesses?
+Power BI should connect to Gold tables or approved aggregate views, not directly to raw source files.
 
-Main visuals will include economic trend charts, sector investment charts, and KPI cards.
+## Repository layout
 
-## Security
+```text
+us-healthcare-warehouse/
+├── data/
+│   ├── raw/                         # Original downloads; ignored by Git
+│   └── samples/
+│       ├── full_load/               # Historical CSV parts
+│       ├── incremental/             # Incremental API response samples
+│       └── samples_manifest.json    # Source, row-count, and file metadata
+├── docs/
+│   ├── data_analysis_project_proposal.md
+│   └── phase2_guidelines.md
+├── ingestion/
+│   └── initial_fetch_for_samples.py
+├── .gitignore
+└── README.md
+```
 
-The selected sources are public government datasets and are not expected to contain personal information. If any unexpected personal field appears, it will be removed before the Silver layer.
+The Phase 2 implementation will add Databricks notebooks, a reusable `src/carewatch` package, tests, operational SQL, and generated data-dictionary documentation.
 
-## Technology
+## Preparing the sample data
 
-- Python
-- Apache Spark / PySpark
-- Parquet
-- Databricks Free Edition or another free/student cloud environment
-- Power BI
-- Git and GitHub
+### Prerequisites
 
-## Cost Control
+- Python 3.10 or later
+- `requests`
+- Internet access to `data.cms.gov`
 
-The historical data will be loaded once. Later runs will process only new or changed data. Small samples will be used during development and testing. Compressed file formats such as Parquet will help reduce storage and compute usage.
+Install the ingestion dependency:
+
+```bash
+python -m pip install requests
+```
+
+Download the CMS bulk files, split them into GitHub-safe parts, and create incremental samples:
+
+```bash
+python ingestion/initial_fetch_for_samples.py
+```
+
+The script defaults to:
+
+- storing original downloads in `data/raw/`;
+- storing version-controlled samples in `data/samples/`;
+- keeping each CSV part below 45 MiB;
+- requiring more than 210 MiB of historical sample data;
+- using `2026-07-01` as the deficiency cutoff;
+- using `2026-06-01` as the penalty cutoff;
+- limiting each incremental API sample to 5,000 rows.
+
+To rebuild the samples from files already present in `data/raw/` without downloading them again:
+
+```bash
+python ingestion/initial_fetch_for_samples.py --reuse
+```
+
+Useful overrides include:
+
+```bash
+python ingestion/initial_fetch_for_samples.py \
+  --cutoff 2026-07-01 \
+  --penalty-cutoff 2026-06-01 \
+  --part-mb 45 \
+  --min-mb 210 \
+  --incr-rows 5000
+```
+
+Do not commit `data/raw/`. The generated manifest records the CMS dataset IDs, source URLs, catalog dates, split cutoffs, row counts, part sizes, and incremental filters.
+
+## Phase 2 engineering requirements
+
+The Bronze and Silver implementation must satisfy the following requirements:
+
+1. Define every input with explicit PySpark `StructType` and `StructField` schemas; do not use `inferSchema`.
+2. Add `load_timestamp` to every record in every table.
+3. Parameterise the dataset, load type, source path, batch ID, catalog, schema, and landing root.
+4. Support both standard incremental runs and reproducible historical backfills.
+5. Use append-only Bronze tables with source lineage.
+6. Use deterministic business keys, row hashes, and Delta `MERGE` in Silver.
+7. Make reruns idempotent: processing the same input twice must not create duplicates.
+8. Detect schema drift and either evolve compatible schemas deliberately or quarantine incompatible data.
+9. Record run status, timing, input parameters, and inserted, updated, unchanged, and quarantined row counts.
+10. Demonstrate full-load, incremental, idempotency, schema-drift, quarantine, and backfill scenarios.
+
+See [Phase 2 guidelines](docs/phase2_guidelines.md) for the implementation sequence and evidence checklist.
+
+## Planned implementation order
+
+1. Create the Databricks catalog/schema, landing areas, and operational log tables.
+2. Add a central dataset registry and explicit Bronze schemas.
+3. Implement the audit and schema-drift helpers.
+4. Build Health Deficiencies from raw input through Bronze and Silver.
+5. Profile and validate its candidate business key.
+6. Repeat the config-driven flow for penalties, provider information, and MDS quality measures.
+7. Add quarantine handling, backfill controls, and evidence notebooks.
+8. Create Gold facts, dimensions, aggregates, and the Power BI semantic model.
+
+Provider Information can initially use a Type 1 upsert. Slowly changing facility history (SCD Type 2) should only be added after the required Bronze and Silver pipeline is working reliably.
+
+## Data quality and security
+
+- Telephone numbers must not be published to Silver or Gold.
+- Street addresses should be hashed with SHA-256 and a salt supplied through a secret, never committed to Git.
+- Invalid CCNs, dates, numeric values, and required keys must be quarantined with an actionable reason.
+- CMS schema changes must not silently alter downstream tables.
+- Raw source values and ingestion lineage must remain available for auditing.
+- Missing numeric values must remain null rather than being converted to zero.
+
+## Current status
+
+Completed:
+
+- Project proposal and target analytical questions
+- CMS dataset selection
+- Historical and incremental sample-generation utility
+- Sample manifest with source and volume metadata
+- Detailed Phase 2 implementation guide
+
+Still to be implemented:
+
+- Databricks setup and control tables
+- Explicit PySpark schemas
+- Bronze ingestion
+- Silver validation and Delta merges
+- Quarantine and audit logging
+- Automated tests and evidence notebooks
+- Gold analytical model
+- Power BI dashboard
+
+## Documentation
+
+- [Project proposal](docs/data_analysis_project_proposal.md)
+- [Phase 2 implementation guidelines](docs/phase2_guidelines.md)
+
+## Team
+
+- Hassan Mehmood — 24L2559, BDS-5B
+- Hanan Ishaq — 24L2537, BDS-5B
