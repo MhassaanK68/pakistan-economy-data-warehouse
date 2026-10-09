@@ -1,0 +1,118 @@
+{
+  "fetched_at_utc": "2026-10-09T22:02:32+00:00",
+  "min_required_mib": 210.0,
+  "full_load": {
+    "health_deficiencies": {
+      "dataset_id": "r5ix-sfxw",
+      "title": "Health Deficiencies",
+      "catalog_modified": "2026-09-30",
+      "next_update": "2026-10-28",
+      "bulk_csv_url": "https://data.cms.gov/provider-data/sites/default/files/resources/e7cd6855ef21902a6803f11dfa287fad_1790792147/NH_HealthCitations_Sep2026_2.csv",
+      "split_column": "survey_date",
+      "full_cutoff": "2026-07-01",
+      "rows": 412064,
+      "rows_held_for_incremental": 6883,
+      "bytes": 157508580,
+      "parts": [
+        {
+          "file": "nh_health_deficiencies_full_part001.csv",
+          "bytes": 47185798,
+          "rows": 123876
+        },
+        {
+          "file": "nh_health_deficiencies_full_part002.csv",
+          "bytes": 47185866,
+          "rows": 122790
+        },
+        {
+          "file": "nh_health_deficiencies_full_part003.csv",
+          "bytes": 47185669,
+          "rows": 123498
+        },
+        {
+          "file": "nh_health_deficiencies_full_part004.csv",
+          "bytes": 15951247,
+          "rows": 41900
+        }
+      ]
+    },
+    "provider_info": {
+      "dataset_id": "4pq5-n9py",
+      "title": "Provider Information",
+      "catalog_modified": "2026-09-30",
+      "next_update": "2026-10-28",
+      "bulk_csv_url": "https://data.cms.gov/provider-data/sites/default/files/resources/4b708f7ece9ed1ef3060686c5546ddf1_1790792149/NH_ProviderInfo_Sep2026_3.csv",
+      "split_column": null,
+      "full_cutoff": null,
+      "rows": 14690,
+      "rows_held_for_incremental": 0,
+      "bytes": 8863671,
+      "parts": [
+        {
+          "file": "nh_provider_info_full_part001.csv",
+          "bytes": 8863671,
+          "rows": 14690
+        }
+      ]
+    },
+    "penalties": {
+      "dataset_id": "g6vv-u9sr",
+      "title": "Penalties",
+      "catalog_modified": "2026-09-30",
+      "next_update": "2026-10-28",
+      "bulk_csv_url": "https://data.cms.gov/provider-data/sites/default/files/resources/c57d1c607447eab2d6e4073c953c9359_1790792149/NH_Penalties_Sep2026_2.csv",
+      "split_column": "penalty_date",
+      "full_cutoff": "2026-06-01",
+      "rows": 15080,
+      "rows_held_for_incremental": 339,
+      "bytes": 2413992,
+      "parts": [
+        {
+          "file": "nh_penalties_full_part001.csv",
+          "bytes": 2413992,
+          "rows": 15080
+        }
+      ]
+    },
+    "mds_quality": {
+      "dataset_id": "djen-97ju",
+      "title": "MDS Quality Measures",
+      "catalog_modified": "2026-09-30",
+      "next_update": "2026-10-28",
+      "bulk_csv_url": "https://data.cms.gov/provider-data/sites/default/files/resources/17c511a56ed65615a426962d13e13070_1790792147/NH_QualityMsr_MDS_Sep2026_2.csv",
+      "split_column": null,
+      "full_cutoff": null,
+      "rows": 249730,
+      "rows_held_for_incremental": 0,
+      "bytes": 71840699,
+      "parts": [
+        {
+          "file": "nh_mds_quality_measures_full_part001.csv",
+          "bytes": 47185699,
+          "rows": 163654
+        },
+        {
+          "file": "nh_mds_quality_measures_full_part002.csv",
+          "bytes": 24655000,
+          "rows": 86076
+        }
+      ]
+    }
+  },
+  "incremental": {
+    "health_deficiencies": {
+      "file": "nh_health_deficiencies_incr_2026-07.json",
+      "filter": "survey_date >= 2026-07-01",
+      "rows_available": 6883,
+      "rows_in_file": 5000
+    },
+    "penalties": {
+      "file": "nh_penalties_incr_2026-06.json",
+      "filter": "penalty_date >= 2026-06-01",
+      "rows_available": 339,
+      "rows_in_file": 339
+    }
+  },
+  "full_load_total_bytes": 240626942,
+  "full_load_total_mib": 229.5
+}
