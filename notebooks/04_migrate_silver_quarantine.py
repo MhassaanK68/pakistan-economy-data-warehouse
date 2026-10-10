@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 """Preview, prepare, verify, or activate the Silver quarantine migration.
 
 The default ``preview`` mode is read-only.  ``prepare`` creates a separate
