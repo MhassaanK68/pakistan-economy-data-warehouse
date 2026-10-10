@@ -95,6 +95,7 @@ us-healthcare-warehouse/
 │   ├── 01_acquire_cms.py
 │   ├── 02_raw_to_bronze.py
 │   ├── 03_bronze_to_silver.py
+│   ├── 04_migrate_silver_quarantine.py
 │   ├── 98_cleanup_mistaken_incremental.py
 │   └── 99_demo_idempotency_drift_backfill.py
 ├── src/carewatch/
@@ -192,6 +193,32 @@ The Raw-to-Bronze notebook accepts:
 
 Each file or API page receives an independent execution-log row. Compatible added columns evolve the managed Delta Bronze table and are recorded in `schema_drift_log`. Missing required columns reject only that file. Corrupt CSV records enter `bronze_quarantine`, while valid records from the file continue to Bronze. A failed or partially quarantined acquisition run never advances its source watermark.
 
+### Running Bronze-to-Silver
+
+Before the first Step 7 run, `silver_quarantine` must have the current eight-column schema. If setup reports `LEGACY_SCHEMA_ACCEPTED_NO_MIGRATION`, run `04_migrate_silver_quarantine.py` in its default `preview` mode. Preview is read-only. Preparing a candidate table and activating it are separate, approval-gated operations; activation retains the old table as `silver_quarantine_legacy_backup`.
+
+`03_bronze_to_silver.py` accepts:
+
+- `dataset` and `load_type`, each defaulting to `all`;
+- optional `acquisition_run_id` and comma-separated `batch_ids`;
+- optional inclusive Bronze `ingest_from` and `ingest_to` dates for backfill;
+- `reprocess`, which defaults to `false` and deliberately retries completed batches when enabled;
+- `allow_soft_deletes`, which defaults to `false`;
+- `address_secret_scope` and `address_secret_key`, which identify the Databricks Secret containing the stable address-hashing salt;
+- `catalog` and `schema`.
+
+With no scope filters, the notebook processes successful Raw-to-Bronze batches that have no terminal Silver log. `SUCCESS` and `QUARANTINED_PARTIAL` are terminal; `FAILURE` remains retryable. It trims strings, converts empty values to null, safely casts values, applies the locked validation rules, removes clear-text contact fields, hashes addresses, generates deterministic keys and business hashes, collapses exact duplicates, quarantines invalid/conflicting rows, and performs an idempotent Delta `MERGE`.
+
+The salt value is never returned to the Python driver or embedded with `F.lit`. The transformation invokes Databricks SQL `secret(scope, key)` inside Spark, so only the non-secret scope and key names appear in the submitted expression. Databricks secret redaction is best-effort, so the code never selects or logs the secret expression. A lookup or permission failure is captured by the per-batch audit boundary.
+
+Batch reads and their materializing counts run inside that same audit boundary. An existing batch excluded by explicit ingestion dates is reported but receives no terminal Silver log. A date filter must include either all or none of a Bronze batch; a partial match fails instead of incorrectly checkpointing only part of a batch. A manifest/log batch with no Bronze rows is a failure. The notebook displays every failure after processing independent batches, then raises `RuntimeError` so a Databricks Job reports failure while already successful batches remain committed and are skipped on retry.
+
+Identical matches are not updated, so their `load_timestamp` stays unchanged. Changed rows update only when the incoming `source_processing_date` is present and is not older than the current row; this prevents an old or undated backfill from replacing current SCD1 values. Backfill reads durable Bronze and never reacquires CMS data or advances `ingestion_watermarks`.
+
+Soft deletion is disabled unless `allow_soft_deletes=true`. Even then, it is blocked for API windows, filtered/reprocessed scopes, empty or unreconciled snapshots, multi-artifact snapshots, snapshots older than the newest validated Bronze snapshot, snapshots without a processing-date scope bound, and any snapshot with quarantined or conflicting rows. Eligible deletion is limited to target rows whose processing date is not newer than the snapshot bound. The current acquisition design produces one bulk artifact for Provider and MDS snapshots; a future multi-artifact snapshot requires a deliberate run-level deletion design rather than weakening this guard.
+
+The source values for some CMS descriptive domains, especially deficiency correction status, are not formally enumerated in the locked contract. Step 7 enforces the documented conditional correction-date rule but does not invent a closed domain that could reject a new valid CMS label.
+
 ### Cleaning the accidental 2026-10-10 API bootstrap
 
 Run `notebooks/98_cleanup_mistaken_incremental.py` in Databricks twice:
@@ -243,11 +270,15 @@ Completed:
 - Local Step 5 regression tests for drift classification, file integrity, API-envelope validation, and all checked-in full/incremental sample schemas
 - Step 5 evidence views for manifest/Bronze/quarantine count conservation, repeated-batch idempotency, drift events, and source watermarks
 - Guarded cleanup notebook for the accidental 2026-10-10 history-wide API acquisition
+- Step 6 explicit Silver schemas, keys, validation specifications, quarantine contract, and data dictionary
+- Step 7 local implementation: manifest-driven Bronze selection, validation, privacy projection, deterministic hashes, duplicate/conflict handling, idempotent Delta MERGE, retry/backfill safeguards, execution logging, and evidence views
+- Separate preview-first, non-destructive legacy Silver quarantine migration notebook
+- Focused local Step 7 policy and contract tests
 
-Still to be implemented: 
+Still to be verified or implemented:
 
-- Silver validation and Delta merges
-- Silver quarantine processing
+- Databricks execution of the Silver quarantine migration after separate approval
+- Databricks Spark/Delta integration and evidence runs for Bronze-to-Silver
 - Databricks integration/evidence runs for the implemented Bronze pipeline
 - Controlled drift fixture runs and saved screenshots/query outputs
 - Gold analytical model

@@ -1,14 +1,14 @@
 # CareWatch Project Status
 
 Last updated: 2026-10-10 (Asia/Karachi)  
-Repository state reviewed: `main` at `a28bac2` (`origin/main`) plus the current Step 5 working-tree implementation
-Current review scope: Phase 2 Steps 1–5 from `docs/phase2_guidelines.md`
+Repository baseline: `main` at Step 6 commit `1ff5c7e`; Step 7 is implemented in the current uncommitted local working tree
+Current review scope: Phase 2 Steps 1–7 from `docs/phase2_guidelines.md`
 
-Latest implementation update: Raw-to-Bronze is implemented locally and passes focused regression verification. A Databricks Delta/Unity Catalog smoke run is still required.
+Latest implementation update: Bronze-to-Silver is implemented locally and passes focused non-Spark regression verification. Databricks Secrets, PySpark, Delta, and Unity Catalog verification is still required.
 
 ## Overall state
 
-Steps 1–5 are substantially implemented. Raw-to-Bronze now consumes only trusted manifest records, verifies landed bytes, handles compatible and breaking drift, writes idempotent managed Delta batches, quarantines corrupt CSV rows, and advances event watermarks only after complete run reconciliation.
+Steps 1–7 are implemented locally. Step 7 consumes successful Bronze batches, enforces the locked Silver contract, quarantines invalid/conflicting rows, and uses guarded hash-aware Delta merges without changing Bronze watermarks.
 
 | Step | State | Summary |
 |---|---|---|
@@ -17,6 +17,8 @@ Steps 1–5 are substantially implemented. Raw-to-Bronze now consumes only trust
 | 3. Explicit Bronze schemas | Implemented | Four explicit all-string source schemas, typed Bronze metadata, incremental envelopes, canonical header normalization, and the Provider header override are present. No `inferSchema` usage was found under `src/` or `notebooks/`. |
 | 4. Logging framework | Implemented; Databricks verification pending | Typed Delta schemas and helpers exist for execution logs, manifests, watermarks, drift logs, and Silver quarantine. Exact-window early returns now produce typed skip log rows. |
 | 5. Raw-to-Bronze | Implemented; Databricks verification pending | Registry-driven CSV/API-page ingestion, integrity validation, schema drift, Bronze quarantine, per-file audit, deterministic batch replacement, manifest reconciliation, and Bronze watermark commits are implemented. |
+| 6. Silver schema design | Implemented; tables reported created | Four locked schemas, business/entity keys, validation specifications, privacy projection, quarantine contract, data dictionary, and design decisions are complete. |
+| 7. Bronze-to-Silver | Implemented locally; Databricks verification pending | Pending-batch selection, safe casting, validation, salted address hashing, deterministic keys/hashes, duplicate/conflict handling, idempotent Delta MERGE, execution logging, retry/backfill protection, and guarded soft deletion are implemented. |
 
 ## Review findings and resolutions
 
@@ -64,6 +66,7 @@ Steps 1–5 are substantially implemented. Raw-to-Bronze now consumes only trust
 | Release-specific CMS URL scan | Pass | No release-specific bulk CSV URL is hard-coded. |
 | PySpark/Delta/Databricks execution | Not run locally | Bundled runtime does not include `pyspark`; no connected Databricks execution environment was available in this review. |
 | Focused Raw-to-Bronze regression suite | Pass | Thirteen tests cover drift classification, header overrides, file integrity, API-envelope validation, and all checked-in full/incremental sample source shapes. |
+| Step 6/7 local contract and policy suite | Pass | Thirty-four total tests pass, including locked schema compatibility plus full/incremental checkpoint, deterministic hash, invalid/conflict, retry, stale backfill, migration, drift, and soft-delete policy checks. |
 
 ## Current implementation inventory
 
@@ -78,8 +81,12 @@ Steps 1–5 are substantially implemented. Raw-to-Bronze now consumes only trust
 - `src/carewatch/bronze.py`: manifest selection, explicit readers, integrity checks, quarantine, Delta batch writes, and run reconciliation.
 - `notebooks/02_raw_to_bronze.py`: parameterized per-file orchestration and evidence summaries.
 - `notebooks/99_demo_idempotency_drift_backfill.py`: scoped manifest/Bronze/quarantine, idempotency, drift, and watermark evidence views.
+- `src/carewatch/silver.py`: reusable Step 7 selection, transformation, validation, duplicate/conflict, quarantine, MERGE, stale-update, and soft-delete logic.
+- `notebooks/03_bronze_to_silver.py`: Databricks Secrets-backed, parameterized Step 7 orchestration for all four datasets.
+- `notebooks/04_migrate_silver_quarantine.py`: preview-first candidate/verify/activate migration that retains the legacy table as a backup.
+- `tests/test_step7_silver_logic.py`: local tests for checkpoint, retry, hash, duplicate/conflict, backfill, migration, and deletion policies.
 - `tests/`: local drift, integrity, envelope, and checked-in sample-contract regression tests.
 
 ## Remaining work and next update
 
-The next required verification is a Databricks smoke run of `00_setup_tables.py`, `01_acquire_cms.ipynb`, and `02_raw_to_bronze.py`. Verify managed Delta creation, `replaceWhere` plus `mergeSchema`, corrupt-record capture, manifest updates, full-load watermark seeding, multi-page incremental reconciliation, and the no-watermark-on-partial rule. After that evidence is saved, Step 7 Silver work can begin.
+The next required Step 7 verification is: preview and separately approve the quarantine migration; configure a stable address-hash secret; run one controlled dataset through `03_bronze_to_silver.py`; inspect Delta history and execution metrics; rerun it to prove zero inserts/updates and unchanged timestamps; then exercise controlled corrected, invalid, conflicting, failed/retry, backfill, and complete-snapshot deletion cases. Do not enable soft deletion until the clean-snapshot evidence and scope have been reviewed.

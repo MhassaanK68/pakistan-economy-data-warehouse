@@ -1,12 +1,12 @@
 # CareWatch Phase 2 Data Dictionary
 
 This dictionary reflects the explicit schemas in `src/carewatch/schemas.py`.
-It documents schema design only; it does not claim that Step 7 processing or
-Databricks integration has run.
+It documents the locked schema design used by the local Step 7 implementation;
+it does not claim that PySpark/Delta integration has run in Databricks.
 
 ## Conventions
 
-- `PK` is the deterministic SHA-256 entity key used by the future Silver merge.
+- `PK` is the deterministic SHA-256 entity key used by the Silver merge.
 - `BK1`, `BK2`, and so on show ordered business-key components.
 - Every source string is trimmed and an empty trimmed string becomes null before
   validation or casting.
@@ -288,3 +288,24 @@ Business key: CCN. Phase 2 uses SCD Type 1 and therefore has no `valid_from`,
 - `row_hash` excludes entity key, lineage, and operational timestamps.
 - Clear-text address, telephone, location, and the address salt never survive
   into Silver.
+
+## Step 7 operational behavior
+
+- Normal runs read only Raw-to-Bronze `SUCCESS` batches that do not yet have a
+  `SUCCESS` or `QUARANTINED_PARTIAL` Bronze-to-Silver log.
+- Invalid values and same-key/different-hash conflicts use the eight-column
+  `silver_quarantine` contract. Exact duplicate quarantine identities collapse,
+  and retries do not append the same rejected record again.
+- Execution-log `rows_quarantined` is the number of rejected input rows. Run
+  output separately shows unique quarantine records, records newly appended on
+  this retry, conflicting inputs, invalid inputs, and exact valid duplicates.
+- `raw_record` intentionally preserves source values for diagnosis and can
+  contain contact data; access to the quarantine table must therefore be more
+  restricted than access to published Silver tables.
+- Delta MERGE inserts new keys, updates changed/reactivated keys only when the
+  source processing date is not stale, and leaves identical rows and their
+  timestamps unchanged.
+- Soft deletion is off by default and requires an explicitly enabled, clean,
+  newest, complete snapshot with a processing-date bound. API windows and
+  backfill/reprocess scopes cannot infer deletion.
+- Bronze ingestion watermarks are outside the Step 7 write set.

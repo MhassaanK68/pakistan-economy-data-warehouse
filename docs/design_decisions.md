@@ -1,9 +1,9 @@
 # CareWatch Silver Design Decisions
 
-This file records the Phase 2 Step 6 decisions implemented in
-`src/carewatch/schemas.py`. It defines the contract that the future Step 7
-pipeline must follow; it does not claim that Bronze-to-Silver processing has
-already been implemented or run.
+This file records the Phase 2 Step 6 contract and the Step 7 implementation
+decisions in `src/carewatch/schemas.py` and `src/carewatch/silver.py`. The code
+is implemented locally; Spark/Delta behavior still requires Databricks
+verification.
 
 ## 1. Contract ownership
 
@@ -69,7 +69,7 @@ when it is read in another batch.
 ## 5. Duplicate policy
 
 - Exact duplicates have the same normalized entity key and the same business
-  `row_hash`; a future pipeline may collapse them deterministically to one row.
+  `row_hash`; Step 7 collapses them deterministically to one row.
 - If the same entity key has more than one business hash in one source slice,
   the rows conflict. The pipeline must not silently choose the newest or first
   row. It must report a contract conflict and keep the ambiguous records out of
@@ -131,6 +131,11 @@ when it is read in another batch.
   address plus a salt supplied through Databricks Secrets.
 - The salt must never be stored in the repository, logs, table properties, or
   notebook widgets as a clear-text value.
+- Step 7 passes only secret scope/key names into a Databricks SQL
+  `secret(scope, key)` expression. It does not materialize the secret in Python
+  or use `F.lit(secret_value)`, reducing exposure through driver state and Spark
+  plan rendering. Secret redaction remains best-effort, so users with secret
+  access must still avoid selecting the expression directly.
 - City, state, and ZIP remain available for geographic analysis.
 
 ## 8. Lineage and quarantine
@@ -146,14 +151,75 @@ only to avoid breaking Step 5; setup does not migrate or write to it.
 
 ## 9. Snapshot deletion boundary
 
-The schemas contain `is_deleted`, but Step 6 performs no deletion processing.
-A future Step 7 implementation may infer soft deletion only from a complete,
-validated bulk snapshot and only within its explicit scope. API windows,
-partial files, test subsets, and manually supplied files may never infer
-deletions.
+Soft deletion is disabled by default. It can run only when the operator sets
+the explicit option and the input is a successful, non-empty, row-count-
+validated single-artifact bulk snapshot with no quarantine/conflict rows. It
+must also be the newest validated Bronze snapshot and provide a non-null maximum
+`source_processing_date`; only target rows at or before that bound are eligible.
+API windows, filtered backfills, reprocessing, partial files, and multi-artifact
+snapshots cannot infer deletions. This conservative boundary compensates for
+the current manifest not having an explicit `complete_snapshot` Boolean.
 
-## 10. Deliberate Step 6 boundary
+## 10. Merge, retry, and backfill
 
-This step defines schemas and rules only. It does not select Bronze batches,
-cast DataFrames, write quarantine records, run Delta `MERGE`, update rows,
-advance watermarks, or execute any Databricks notebook.
+- Standard runs select Raw-to-Bronze `SUCCESS` batches without a terminal
+  Bronze-to-Silver log. `SUCCESS` and `QUARANTINED_PARTIAL` are terminal;
+  `FAILURE` remains pending.
+- Ingestion-date filters may include all or none of a durable Bronze batch. A
+  zero-row date match is reported without a terminal checkpoint; a partial
+  batch match fails rather than marking an incompletely processed batch done.
+- Delta `MERGE` inserts new entity keys and updates only changed/reactivated
+  rows. Identical hashes are no-ops and preserve `load_timestamp`.
+- A changed row can update an existing SCD1 row only when its non-null
+  `source_processing_date` is at least as recent as the target date. An older
+  or undated backfill cannot overwrite a current row. There is deliberately no
+  historical-overwrite option.
+- Quarantine append is idempotent using batch, file, candidate key, raw JSON,
+  and failed rules; `load_timestamp` is excluded from that identity.
+- Audit `rows_quarantined` counts input rows rejected. The run summary separately
+  reports invalid input rows, conflicting input rows, unique quarantine records,
+  newly written quarantine records, and exact valid duplicates collapsed.
+- Step 7 never imports or calls the Bronze watermark commit function. If a
+  merge commits but its log append fails, retrying is safe because the same
+  business hash is a no-op.
+
+## 11. Legacy quarantine migration
+
+`04_migrate_silver_quarantine.py` defaults to a read-only preview. It resolves
+legacy `dataset`/`batch_id` lineage against successful manifest records and
+refuses missing lineage or more than one distinct source-path/hash pair. Prepare
+creates a separate eight-column candidate without overwriting the five-column
+table. Verify uses row counts and bidirectional `exceptAll`, so duplicate legacy
+records are preserved. Activation requires a second explicit confirmation,
+renames the legacy table to a retained backup, and renames the verified
+candidate to the canonical name. If promotion or post-promotion verification
+fails, a best-effort rename rollback restores the legacy canonical name and
+retains the candidate. No path issues `DROP TABLE` or overwrite writes.
+
+## 12. Deployed nullability verification
+
+Step 7 compares ordered column names and Spark types, then checks nullability
+through Unity Catalog `information_schema.columns`. If that metadata view is
+unavailable, it uses the Spark table schema. A mismatch fails closed rather
+than weakening the Step 6 contract. Some Delta/runtime combinations normalize
+nullable metadata; in that case the operator must inspect `DESCRIBE TABLE
+EXTENDED`, run explicit null-count queries for every non-null contract column,
+and correct or recreate the table definition before Step 7 is allowed to write.
+
+## 13. Domain uncertainty
+
+The contract does not publish a closed list for every CMS descriptive field.
+In particular, deficiency correction status is not treated as a closed domain.
+The known phrase `Deficient, Provider has date of correction` requires a
+correction date, while a date before the survey remains valid. New non-empty CMS
+labels are retained unless they violate an explicit locked rule.
+
+`inspection_cycle` is stored as `INT`; executable validation converts the
+declarative values `1`, `2`, and `3` to the target Spark type before comparison.
+
+## 14. Verification boundary
+
+Local tests cover pure checkpoint, hash, duplicate/conflict, stale-update,
+migration-guard, and deletion-gate decisions. They do not prove Databricks
+Secrets, Unity Catalog permissions, Delta MERGE metrics, transaction history,
+or concurrent writer behavior.

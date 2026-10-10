@@ -20,6 +20,7 @@ from pyspark.sql.types import (
 
 
 MAX_ERROR_LENGTH = 2000
+_SUPPRESS_AUDIT_LOG_KEY = "_suppress_audit_log"
 VALID_LAYERS = {"CMS-to-Landing", "Raw-to-Bronze", "Bronze-to-Silver"}
 VALID_LOAD_TYPES = {"full", "incremental"}
 VALID_STATUSES = {
@@ -261,6 +262,17 @@ def completed_log_record(
     return record
 
 
+def suppress_audit_log(record: dict[str, Any]) -> None:
+    """Cancel a successful audit row when a scoped item intentionally does no work.
+
+    This is used for a batch that exists in Bronze but has no rows inside an
+    explicitly requested ingestion-date range. Exceptions still produce a
+    failure log; callers cannot use this marker to hide an error.
+    """
+
+    record[_SUPPRESS_AUDIT_LOG_KEY] = True
+
+
 @contextmanager
 def audited(
     spark: Any,
@@ -304,6 +316,9 @@ def audited(
         end_time = utc_now()
         record["end_time"] = end_time
         record["load_timestamp"] = end_time
+        suppress_success = bool(record.pop(_SUPPRESS_AUDIT_LOG_KEY, False))
+        if suppress_success and processing_error is None:
+            return
         try:
             write_execution_log(spark, log_table, record)
         except Exception as log_error:
@@ -316,6 +331,30 @@ def audited(
 
 def _schema_signature(schema: StructType) -> dict[str, str]:
     return {field.name: field.dataType.simpleString() for field in schema.fields}
+
+
+def silver_quarantine_schema_state(spark: Any, table_name: str) -> str:
+    """Classify the deployed quarantine table without changing it.
+
+    ``CURRENT`` is the only state from which Step 7 may write.  Setup continues
+    to accept ``LEGACY`` so Step 5 remains usable until the separately approved
+    migration notebook is run.
+    """
+
+    if not spark.catalog.tableExists(table_name):
+        return "MISSING"
+    def ordered_signature(schema: StructType) -> tuple[tuple[str, str], ...]:
+        return tuple(
+            (field.name, field.dataType.simpleString())
+            for field in schema.fields
+        )
+
+    actual = ordered_signature(spark.table(table_name).schema)
+    if actual == ordered_signature(SILVER_QUARANTINE_SCHEMA):
+        return "CURRENT"
+    if actual == ordered_signature(LEGACY_SILVER_QUARANTINE_SCHEMA):
+        return "LEGACY"
+    return "MISMATCH"
 
 
 def ensure_delta_table(spark: Any, table_name: str, schema: StructType) -> str:
