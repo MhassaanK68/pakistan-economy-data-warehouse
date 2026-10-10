@@ -95,11 +95,30 @@ WATERMARK_SCHEMA = StructType(
 SCHEMA_DRIFT_LOG_SCHEMA = StructType(
     [
         StructField("run_id", StringType(), False),
+        StructField("batch_id", StringType(), True),
         StructField("dataset", StringType(), False),
         StructField("source_file", StringType(), False),
+        StructField("source_file_sha256", StringType(), True),
         StructField("drift_type", StringType(), False),
         StructField("column_name", StringType(), True),
         StructField("detail", StringType(), False),
+        StructField("load_timestamp", TimestampType(), False),
+    ]
+)
+
+BRONZE_QUARANTINE_SCHEMA = StructType(
+    [
+        StructField("dataset", StringType(), False),
+        StructField("dataset_id", StringType(), False),
+        StructField("source_file", StringType(), False),
+        StructField("source_file_sha256", StringType(), False),
+        StructField("batch_id", StringType(), False),
+        StructField("load_type", StringType(), False),
+        StructField("raw_record", StringType(), True),
+        StructField("corrupt_record", StringType(), True),
+        StructField(
+            "failed_rules", ArrayType(StringType(), containsNull=False), False
+        ),
         StructField("load_timestamp", TimestampType(), False),
     ]
 )
@@ -121,6 +140,7 @@ CONTROL_TABLE_SCHEMAS: dict[str, StructType] = {
     "source_file_manifest": MANIFEST_SCHEMA,
     "ingestion_watermarks": WATERMARK_SCHEMA,
     "schema_drift_log": SCHEMA_DRIFT_LOG_SCHEMA,
+    "bronze_quarantine": BRONZE_QUARANTINE_SCHEMA,
     "silver_quarantine": SILVER_QUARANTINE_SCHEMA,
 }
 
@@ -350,6 +370,19 @@ def ensure_control_tables(
                         "last_successful_silver_run_id "
                         "WHERE last_successful_bronze_run_id IS NULL"
                     )
+        if object_name == "schema_drift_log" and spark.catalog.tableExists(
+            table_name
+        ):
+            actual_names = {field.name for field in spark.table(table_name).schema.fields}
+            additions = []
+            if "batch_id" not in actual_names:
+                additions.append("batch_id STRING")
+            if "source_file_sha256" not in actual_names:
+                additions.append("source_file_sha256 STRING")
+            if additions:
+                spark.sql(
+                    f"ALTER TABLE {table_name} ADD COLUMNS ({', '.join(additions)})"
+                )
         action = ensure_delta_table(spark, table_name, table_schema)
         results.append({"table_name": table_name, "action": action})
     return results

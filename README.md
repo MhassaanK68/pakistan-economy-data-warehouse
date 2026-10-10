@@ -53,7 +53,7 @@ Power BI dashboards
 
 ### Bronze
 
-Bronze preserves source values as strings and adds operational metadata such as the source file, batch ID, load type, ingestion date, and `load_timestamp`. Bronze data is append-only so every ingestion event remains auditable.
+Bronze preserves source values as strings and adds operational metadata such as the source file, batch ID, load type, ingestion date, and `load_timestamp`. Distinct batches append logically; an explicit rerun atomically replaces only the same deterministic batch so ingestion remains auditable and idempotent.
 
 ### Silver
 
@@ -177,6 +177,21 @@ The Bronze and Silver implementation must satisfy the following requirements:
 
 See [Phase 2 guidelines](docs/phase2_guidelines.md) for the implementation sequence and evidence checklist.
 
+### Running Raw-to-Bronze
+
+Run `00_setup_tables.py` and `01_acquire_cms.ipynb` before `02_raw_to_bronze.py`. Raw-to-Bronze reads only successful records from `source_file_manifest`; it never scans the landing Volume for unregistered files.
+
+The Raw-to-Bronze notebook accepts:
+
+- `dataset`: one registry dataset or `all`;
+- `load_type`: `full`, `incremental`, or `all`;
+- `acquisition_run_id`: optional exact acquisition run;
+- `source_path`: optional exact path that must already exist in the manifest;
+- `reprocess`: defaults to `false`; set it to `true` only for deliberate batch replacement;
+- `catalog` and `schema`: Unity Catalog namespace.
+
+Each file or API page receives an independent execution-log row. Compatible added columns evolve the managed Delta Bronze table and are recorded in `schema_drift_log`. Missing required columns reject only that file. Corrupt CSV records enter `bronze_quarantine`, while valid records from the file continue to Bronze. A failed or partially quarantined acquisition run never advances its source watermark.
+
 ### Cleaning the accidental 2026-10-10 API bootstrap
 
 Run `notebooks/98_cleanup_mistaken_incremental.py` in Databricks twice:
@@ -224,14 +239,17 @@ Completed:
 - Step 3 explicit Bronze schemas: all-string source contracts, typed lineage metadata, incremental JSON envelopes, and strict bulk-header mapping
 - Step 4 operational controls: idempotent Delta table setup, typed execution logs, acquisition audit integration, watermarks, drift logs, and Silver quarantine contracts
 - Bronze-checkpoint acquisition safeguards: no history fallback, exact-window reuse, pending-Bronze blocking, unchanged-snapshot preflight, and page progress
+- Step 5 Raw-to-Bronze: manifest-only selection, landed-file hash verification, explicit CSV/JSON schemas, compatible schema evolution, corrupt-row quarantine, deterministic Delta batch replacement, run-level count reconciliation, and Bronze-controlled watermarks
+- Local Step 5 regression tests for drift classification, file integrity, API-envelope validation, and all checked-in full/incremental sample schemas
+- Step 5 evidence views for manifest/Bronze/quarantine count conservation, repeated-batch idempotency, drift events, and source watermarks
 - Guarded cleanup notebook for the accidental 2026-10-10 history-wide API acquisition
 
 Still to be implemented: 
 
-- Bronze ingestion
 - Silver validation and Delta merges
-- Bronze/Silver quarantine processing and transformation-layer audit integration
-- Automated tests and evidence notebooks
+- Silver quarantine processing
+- Databricks integration/evidence runs for the implemented Bronze pipeline
+- Controlled drift fixture runs and saved screenshots/query outputs
 - Gold analytical model
 - Power BI dashboard
 

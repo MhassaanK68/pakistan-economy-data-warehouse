@@ -1,14 +1,14 @@
 # CareWatch Project Status
 
 Last updated: 2026-10-10 (Asia/Karachi)  
-Repository state reviewed: `main` at `35ea594` (`origin/main`), clean working tree  
-Current review scope: Phase 2 Steps 1–4 from `docs/phase2_guidelines.md`
+Repository state reviewed: `main` at `a28bac2` (`origin/main`) plus the current Step 5 working-tree implementation
+Current review scope: Phase 2 Steps 1–5 from `docs/phase2_guidelines.md`
 
-Latest implementation update: all approved high/medium findings are implemented and pass local regression verification.
+Latest implementation update: Raw-to-Bronze is implemented locally and passes focused regression verification. A Databricks Delta/Unity Catalog smoke run is still required.
 
 ## Overall state
 
-Steps 1–4 are substantially implemented. The approved high/medium correctness and traceability gaps have been fixed and covered by focused local regression tests. The low-priority widget-default mismatch and Databricks-only verification remain outstanding.
+Steps 1–5 are substantially implemented. Raw-to-Bronze now consumes only trusted manifest records, verifies landed bytes, handles compatible and breaking drift, writes idempotent managed Delta batches, quarantines corrupt CSV rows, and advances event watermarks only after complete run reconciliation.
 
 | Step | State | Summary |
 |---|---|---|
@@ -16,6 +16,7 @@ Steps 1–4 are substantially implemented. The approved high/medium correctness 
 | 2. Automated CMS acquisition | Implemented; Databricks verification pending | Registry-driven full and incremental acquisition, streaming, hashing, API pagination, snapshot refresh, and watermark prechecks exist. Manifest dates, failed-download cleanup, and reuse auditing are fixed. The acquisition widget still defaults to incremental instead of full. |
 | 3. Explicit Bronze schemas | Implemented | Four explicit all-string source schemas, typed Bronze metadata, incremental envelopes, canonical header normalization, and the Provider header override are present. No `inferSchema` usage was found under `src/` or `notebooks/`. |
 | 4. Logging framework | Implemented; Databricks verification pending | Typed Delta schemas and helpers exist for execution logs, manifests, watermarks, drift logs, and Silver quarantine. Exact-window early returns now produce typed skip log rows. |
+| 5. Raw-to-Bronze | Implemented; Databricks verification pending | Registry-driven CSV/API-page ingestion, integrity validation, schema drift, Bronze quarantine, per-file audit, deterministic batch replacement, manifest reconciliation, and Bronze watermark commits are implemented. |
 
 ## Review findings and resolutions
 
@@ -62,7 +63,7 @@ Steps 1–4 are substantially implemented. The approved high/medium correctness 
 | Hard-coded Volume-path scan | Pass | `/Volumes/` appears only in setup/configuration and widget defaults, not transformation functions. |
 | Release-specific CMS URL scan | Pass | No release-specific bulk CSV URL is hard-coded. |
 | PySpark/Delta/Databricks execution | Not run locally | Bundled runtime does not include `pyspark`; no connected Databricks execution environment was available in this review. |
-| Focused regression suite | Pass | Three tests cover bulk manifest `as_of_date`, cleanup after a post-download count failure, and logging before exact-window early return. |
+| Focused Raw-to-Bronze regression suite | Pass | Thirteen tests cover drift classification, header overrides, file integrity, API-envelope validation, and all checked-in full/incremental sample source shapes. |
 
 ## Current implementation inventory
 
@@ -73,7 +74,12 @@ Steps 1–4 are substantially implemented. The approved high/medium correctness 
 - `src/carewatch/schemas.py`: explicit source, CSV-read, Bronze, and API-envelope schemas.
 - `src/carewatch/audit.py`: typed control-table contracts, table setup, and execution logging.
 - `src/carewatch/watermarks.py`: Bronze checkpoint and pending/exact-window lookup support.
+- `src/carewatch/drift.py`: pure compatible/breaking source-shape classification.
+- `src/carewatch/bronze.py`: manifest selection, explicit readers, integrity checks, quarantine, Delta batch writes, and run reconciliation.
+- `notebooks/02_raw_to_bronze.py`: parameterized per-file orchestration and evidence summaries.
+- `notebooks/99_demo_idempotency_drift_backfill.py`: scoped manifest/Bronze/quarantine, idempotency, drift, and watermark evidence views.
+- `tests/`: local drift, integrity, envelope, and checked-in sample-contract regression tests.
 
 ## Remaining work and next update
 
-The approved high/medium fixes are complete. Finding 4 remains intentionally unchanged because approval covered only high and medium issues. The next required verification is a Databricks smoke run of `00_setup_tables.py` and `01_acquire_cms.ipynb`, including the manifest migration, Delta writes, exact-window skip logs, and managed-Volume cleanup behavior. Update this report after that run or after the next implementation step.
+The next required verification is a Databricks smoke run of `00_setup_tables.py`, `01_acquire_cms.ipynb`, and `02_raw_to_bronze.py`. Verify managed Delta creation, `replaceWhere` plus `mergeSchema`, corrupt-record capture, manifest updates, full-load watermark seeding, multi-page incremental reconciliation, and the no-watermark-on-partial rule. After that evidence is saved, Step 7 Silver work can begin.
