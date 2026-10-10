@@ -40,7 +40,7 @@ from carewatch.watermarks import read_successful_watermark, table_exists  # noqa
 
 # COMMAND ----------
 
-dbutils.widgets.dropdown("load_type", "full", ["full", "incremental"])
+dbutils.widgets.dropdown("load_type", "incremental", ["full", "incremental"])
 dbutils.widgets.text("overlap_days", "60")
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.text("catalog", "carewatch")

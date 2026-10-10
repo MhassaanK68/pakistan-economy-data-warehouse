@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 """Create or verify the CareWatch namespace, landing Volume, and control tables."""
 
 # COMMAND ----------
