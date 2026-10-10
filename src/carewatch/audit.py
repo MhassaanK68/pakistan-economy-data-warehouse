@@ -126,6 +126,25 @@ BRONZE_QUARANTINE_SCHEMA = StructType(
 SILVER_QUARANTINE_SCHEMA = StructType(
     [
         StructField("dataset", StringType(), False),
+        StructField("source_batch_id", StringType(), False),
+        StructField("source_file", StringType(), False),
+        StructField("source_file_sha256", StringType(), False),
+        StructField("candidate_entity_key", StringType(), True),
+        StructField("raw_record", StringType(), False),
+        StructField(
+            "failed_rules", ArrayType(StringType(), containsNull=False), False
+        ),
+        StructField("load_timestamp", TimestampType(), False),
+    ]
+)
+
+# Step 4 originally created a smaller placeholder before the locked Silver
+# contract was implemented.  Accepting that exact legacy shape during setup
+# keeps Raw-to-Bronze operational, but no migration is performed implicitly.
+# Step 7 must require the current schema before it writes Silver quarantine rows.
+LEGACY_SILVER_QUARANTINE_SCHEMA = StructType(
+    [
+        StructField("dataset", StringType(), False),
         StructField("batch_id", StringType(), False),
         StructField("raw_record", StringType(), False),
         StructField(
@@ -340,6 +359,22 @@ def ensure_control_tables(
     results = []
     for object_name, table_schema in CONTROL_TABLE_SCHEMAS.items():
         table_name = qualified_name(catalog, schema_name, object_name)
+        if object_name == "silver_quarantine" and spark.catalog.tableExists(
+            table_name
+        ):
+            actual_signature = _schema_signature(spark.table(table_name).schema)
+            legacy_signature = _schema_signature(LEGACY_SILVER_QUARANTINE_SCHEMA)
+            if actual_signature == legacy_signature:
+                # Do not alter, rename, or recreate a cloud table from setup.
+                # This compatibility path exists solely so the Step 5 notebook,
+                # which verifies all control tables, continues to run unchanged.
+                results.append(
+                    {
+                        "table_name": table_name,
+                        "action": "LEGACY_SCHEMA_ACCEPTED_NO_MIGRATION",
+                    }
+                )
+                continue
         if object_name == "source_file_manifest" and spark.catalog.tableExists(
             table_name
         ):

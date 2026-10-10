@@ -24,8 +24,9 @@ def _add_project_src() -> None:
 
 _add_project_src()
 
-from carewatch.audit import ensure_control_tables  # noqa: E402
-from carewatch.config import qualified_name  # noqa: E402
+from carewatch.audit import ensure_control_tables, ensure_delta_table  # noqa: E402
+from carewatch.config import DATASETS, qualified_name  # noqa: E402
+from carewatch.schemas import SILVER_SCHEMAS  # noqa: E402
 
 # COMMAND ----------
 
@@ -74,6 +75,20 @@ setup_results.extend(
         "action": item["action"],
     }
     for item in ensure_control_tables(spark, catalog, schema_name)
+)
+setup_results.extend(
+    {
+        "object_name": qualified_name(
+            catalog, schema_name, DATASETS[dataset].silver_table
+        ),
+        "object_type": "SILVER_DELTA_TABLE",
+        "action": ensure_delta_table(
+            spark,
+            qualified_name(catalog, schema_name, DATASETS[dataset].silver_table),
+            SILVER_SCHEMAS[dataset],
+        ),
+    }
+    for dataset in sorted(SILVER_SCHEMAS)
 )
 
 display(
