@@ -274,7 +274,7 @@ def _stream_to_temporary_file(
                 declared_length is not None
                 and "chunked" not in transfer_encoding
                 and not content_encoding
-                and size != int(declared_length)
+                and size < int(declared_length)
             ):
                 raise ValueError(
                     f"Incomplete bulk download: expected {declared_length} bytes, received {size}"

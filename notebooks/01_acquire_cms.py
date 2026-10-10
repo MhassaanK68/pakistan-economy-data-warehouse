@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "6"
+# ///
 """Acquire CMS full snapshots or incrementals into a Unity Catalog Volume."""
 
 # COMMAND ----------
