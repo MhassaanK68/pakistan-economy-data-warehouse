@@ -67,10 +67,81 @@ spark.conf.set("spark.sql.session.timeZone", "UTC")
 from pyspark.sql import Window, functions as F  # noqa: E402
 
 
+def _ordered_signature(schema):
+    return tuple(
+        (field.name, field.dataType.simpleString()) for field in schema.fields
+    )
+
+
+def _require_valid_legacy_table(source_table=legacy_table) -> int:
+    """Accept legacy metadata normalization only after structural/data checks."""
+
+    if not spark.catalog.tableExists(source_table):
+        raise RuntimeError(f"Required legacy table does not exist: {source_table}")
+    source = spark.table(source_table)
+    actual = _ordered_signature(source.schema)
+    expected = _ordered_signature(LEGACY_SILVER_QUARANTINE_SCHEMA)
+    if actual != expected:
+        raise RuntimeError(
+            f"Legacy table {source_table} does not match the exact ordered "
+            f"five-column structure. Expected {expected}, got {actual}"
+        )
+
+    required_columns = tuple(
+        field.name
+        for field in LEGACY_SILVER_QUARANTINE_SCHEMA.fields
+        if not field.nullable
+    )
+    invalid_condition = F.lit(False)
+    for column in required_columns:
+        invalid_condition = invalid_condition | F.col(column).isNull()
+    # The legacy contract also forbids null elements inside failed_rules.
+    invalid_condition = invalid_condition | F.exists(
+        F.col("failed_rules"), lambda value: value.isNull()
+    )
+    invalid_rows = int(source.filter(invalid_condition).count())
+    if invalid_rows:
+        raise RuntimeError(
+            f"Legacy table {source_table} contains {invalid_rows} row(s) with "
+            "NULL required fields or NULL failed_rules elements; migration is blocked"
+        )
+    return int(source.count())
+
+
+def _create_candidate_with_constraints() -> None:
+    """Create the new empty Delta table with explicit column constraints."""
+
+    columns = []
+    for field in SILVER_QUARANTINE_SCHEMA.fields:
+        nullability = "" if field.nullable else " NOT NULL"
+        columns.append(
+            f"`{field.name}` {field.dataType.simpleString()}{nullability}"
+        )
+    spark.sql(
+        f"CREATE TABLE {candidate_table} ({', '.join(columns)}) USING DELTA"
+    )
+    # Fail before writing any migrated rows if the runtime did not preserve the
+    # requested constraints in Unity Catalog metadata.
+    require_exact_table_schema(spark, candidate_table, SILVER_QUARANTINE_SCHEMA)
+
+
 def _legacy_with_lineage(source_table=legacy_table):
     """Build the candidate rows without writing them."""
 
-    require_exact_table_schema(spark, source_table, LEGACY_SILVER_QUARANTINE_SCHEMA)
+    legacy_rows = _require_valid_legacy_table(source_table)
+    source = spark.table(source_table)
+    if legacy_rows == 0:
+        return source.select(
+            "dataset",
+            F.col("batch_id").alias("source_batch_id"),
+            F.lit(None).cast("string").alias("source_file"),
+            F.lit(None).cast("string").alias("source_file_sha256"),
+            F.lit(None).cast("string").alias("candidate_entity_key"),
+            "raw_record",
+            "failed_rules",
+            "load_timestamp",
+        )
+
     if not spark.catalog.tableExists(manifest_table):
         raise RuntimeError(f"Required manifest table does not exist: {manifest_table}")
 
@@ -108,8 +179,9 @@ def _legacy_with_lineage(source_table=legacy_table):
             F.lower("source_file_sha256").alias("source_file_sha256"),
         )
     )
-    source = spark.table(source_table).alias("legacy")
-    joined = source.join(lineage.alias("manifest"), ["dataset", "batch_id"], "left")
+    joined = source.alias("legacy").join(
+        lineage.alias("manifest"), ["dataset", "batch_id"], "left"
+    )
     unresolved = joined.filter(
         F.col("source_file").isNull() | F.col("source_file_sha256").isNull()
     ).count()
@@ -134,9 +206,7 @@ def _verify_pair(
     legacy_source=legacy_table, current_target=candidate_table
 ) -> dict[str, object]:
     require_exact_table_schema(spark, current_target, SILVER_QUARANTINE_SCHEMA)
-    require_exact_table_schema(
-        spark, legacy_source, LEGACY_SILVER_QUARANTINE_SCHEMA
-    )
+    _require_valid_legacy_table(legacy_source)
     expected = _legacy_with_lineage(legacy_source)
     candidate = spark.table(current_target)
     legacy_count = int(expected.count())
@@ -225,12 +295,9 @@ elif mode == "prepare":
             f"Candidate table already exists and will not be overwritten: {candidate_table}"
         )
     migrated = _legacy_with_lineage()
-    # Create with the explicit contract first; avoid RDD APIs that are not
-    # available on Databricks serverless compute.
-    spark.createDataFrame([], schema=SILVER_QUARANTINE_SCHEMA).write.format(
-        "delta"
-    ).mode("append").saveAsTable(candidate_table)
-    migrated.write.format("delta").mode("append").saveAsTable(candidate_table)
+    _create_candidate_with_constraints()
+    if migrated.limit(1).count() > 0:
+        migrated.write.format("delta").mode("append").saveAsTable(candidate_table)
     verification = _verify_pair()
     display(spark.createDataFrame([verification]))
     if not verification["verified"]:
