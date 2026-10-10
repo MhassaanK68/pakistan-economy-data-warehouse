@@ -287,8 +287,12 @@ def ensure_delta_table(spark: Any, table_name: str, schema: StructType) -> str:
             )
         return "VERIFIED"
 
+    # Databricks Free/serverless does not support the ``errorifexists`` writer
+    # mode. An empty typed append creates a missing managed table without
+    # inserting rows; a concurrent creator is still protected by Delta's
+    # schema checks.
     spark.createDataFrame([], schema=schema).write.format("delta").mode(
-        "errorifexists"
+        "append"
     ).saveAsTable(table_name)
     return "CREATED"
 
