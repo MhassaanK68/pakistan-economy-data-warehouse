@@ -2,7 +2,7 @@
 """Acquire CMS full snapshots or incrementals into a Unity Catalog Volume."""
 
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -25,6 +25,7 @@ _add_project_src()
 from carewatch.acquire import (  # noqa: E402
     AcquisitionRequest,
     acquire_dataset,
+    bulk_publication_key,
     parse_bool,
 )
 from carewatch.audit import (  # noqa: E402
@@ -36,7 +37,12 @@ from carewatch.audit import (  # noqa: E402
     write_execution_log,
 )
 from carewatch.config import DATASETS, qualified_name  # noqa: E402
-from carewatch.watermarks import read_successful_watermark, table_exists  # noqa: E402
+from carewatch.watermarks import (  # noqa: E402
+    find_complete_api_window,
+    find_pending_api_window,
+    read_successful_watermark,
+    table_exists,
+)
 
 # COMMAND ----------
 
@@ -103,42 +109,127 @@ def existing_content_files(dataset_name: str) -> dict[str, str]:
             existing.setdefault(row["source_content_sha256"], path)
     return existing
 
+
+def existing_bulk_publications(dataset_name: str) -> dict[str, dict]:
+    """Return manifest metadata used to skip an unchanged bulk publication."""
+
+    if not table_exists(spark, manifest_table):
+        return {}
+    rows = (
+        spark.table(manifest_table)
+        .filter(F.col("dataset") == F.lit(dataset_name))
+        .filter(F.col("acquisition_strategy").isin("bulk_snapshot", "snapshot_diff"))
+        .filter(F.col("status").isin("SUCCESS", "SKIPPED_ALREADY_ACQUIRED"))
+        .orderBy(F.col("load_timestamp").desc())
+        .collect()
+    )
+    publications: dict[str, dict] = {}
+    for row in rows:
+        values = row.asDict(recursive=True)
+        path = values.get("landing_path")
+        if path and Path(path).is_file():
+            key = bulk_publication_key(
+                values["source_url"], values.get("source_catalog_modified")
+            )
+            publications.setdefault(key, values)
+    return publications
+
 # COMMAND ----------
 
 manifest_records = []
 failures = []
 
+bronze_watermarks = {}
+if PARAMETERS["load_type"] == "incremental":
+    for config in DATASETS.values():
+        if config.incremental_strategy == "api_date_window":
+            bronze_watermarks[config.name] = read_successful_watermark(
+                spark, watermark_table, config.name
+            )
+    missing_watermarks = sorted(
+        dataset for dataset, value in bronze_watermarks.items() if value is None
+    )
+    if missing_watermarks:
+        raise RuntimeError(
+            "Normal incremental acquisition requires a successful Bronze extraction "
+            "watermark for every API dataset. Complete the initial full acquisition "
+            "through 02_raw_to_bronze first. Missing: "
+            + ", ".join(missing_watermarks)
+        )
+
 for dataset_config in DATASETS.values():
     attempt_started = utc_now()
     last_watermark = None
-    start_date = None
     if (
         PARAMETERS["load_type"] == "incremental"
         and dataset_config.incremental_strategy == "api_date_window"
     ):
-        last_watermark = read_successful_watermark(
-            spark, watermark_table, dataset_config.name
-        )
-        if last_watermark is None:
-            start_date = dataset_config.history_start_date
+        last_watermark = bronze_watermarks[dataset_config.name]
 
     request = AcquisitionRequest(
         dataset=dataset_config.name,
         load_type=PARAMETERS["load_type"],
         as_of_date=as_of_date,
-        start_date=start_date,
+        start_date=None,
         overlap_days=overlap_days,
         force_refresh=force_refresh,
         landing_root=PARAMETERS["landing_root"],
     )
 
     try:
+        if (
+            PARAMETERS["load_type"] == "incremental"
+            and dataset_config.incremental_strategy == "api_date_window"
+            and last_watermark is not None
+            and not force_refresh
+        ):
+            window_start = last_watermark - timedelta(days=overlap_days)
+            exact_window = find_complete_api_window(
+                spark,
+                manifest_table,
+                execution_log_table,
+                dataset_config.name,
+                window_start,
+                as_of_date,
+            )
+            if exact_window is not None:
+                downstream = (
+                    "already committed to Bronze"
+                    if exact_window.bronze_complete
+                    else "waiting for Raw-to-Bronze"
+                )
+                print(
+                    f"[{dataset_config.name}] exact window already acquired as "
+                    f"{exact_window.acquisition_run_id}; {downstream}. "
+                    "No CMS API requests were made."
+                )
+                continue
+
+            pending_window = find_pending_api_window(
+                spark,
+                manifest_table,
+                execution_log_table,
+                dataset_config.name,
+                last_watermark,
+            )
+            if pending_window is not None:
+                raise RuntimeError(
+                    "A newer complete acquisition is still waiting for Raw-to-Bronze: "
+                    f"run_id={pending_window.acquisition_run_id}, "
+                    f"window={pending_window.window_start}..{pending_window.window_end}. "
+                    "Run 02_raw_to_bronze before acquiring another window."
+                )
+
         result = acquire_dataset(
             request,
             last_successful_watermark=last_watermark,
             existing_files_by_content_hash=existing_content_files(
                 dataset_config.name
             ),
+            existing_bulk_by_publication=existing_bulk_publications(
+                dataset_config.name
+            ),
+            progress=print,
         )
         records = [item.as_manifest_record() for item in result.files]
         if not records:

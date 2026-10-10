@@ -83,7 +83,10 @@ WATERMARK_SCHEMA = StructType(
         StructField("watermark_column", StringType(), False),
         StructField("watermark_value", DateType(), False),
         StructField("last_successful_acquisition_run_id", StringType(), False),
-        StructField("last_successful_silver_run_id", StringType(), False),
+        StructField("last_successful_bronze_run_id", StringType(), False),
+        # Legacy Step 4 field. It remains nullable for a safe in-place migration
+        # and is not used as the source-extraction checkpoint.
+        StructField("last_successful_silver_run_id", StringType(), True),
         StructField("load_timestamp", TimestampType(), False),
     ]
 )
@@ -271,8 +274,8 @@ def audited(
             print(f"WARNING: failed to persist execution log: {log_error}")
 
 
-def _schema_signature(schema: StructType) -> list[tuple[str, str]]:
-    return [(field.name, field.dataType.simpleString()) for field in schema.fields]
+def _schema_signature(schema: StructType) -> dict[str, str]:
+    return {field.name: field.dataType.simpleString() for field in schema.fields}
 
 
 def ensure_delta_table(spark: Any, table_name: str, schema: StructType) -> str:
@@ -280,10 +283,19 @@ def ensure_delta_table(spark: Any, table_name: str, schema: StructType) -> str:
 
     if spark.catalog.tableExists(table_name):
         actual = spark.table(table_name).schema
-        if _schema_signature(actual) != _schema_signature(schema):
+        actual_signature = _schema_signature(actual)
+        expected_signature = _schema_signature(schema)
+        mismatches = {
+            name: (expected_type, actual_signature.get(name))
+            for name, expected_type in expected_signature.items()
+            if actual_signature.get(name) != expected_type
+        }
+        unexpected = sorted(set(actual_signature) - set(expected_signature))
+        if mismatches or unexpected:
             raise ValueError(
                 f"Existing table {table_name} does not match its locked schema. "
-                f"Expected {_schema_signature(schema)}, got {_schema_signature(actual)}"
+                f"Missing/type-mismatched fields: {mismatches}; "
+                f"unexpected fields: {unexpected}. Actual: {actual_signature}"
             )
         return "VERIFIED"
 
@@ -307,6 +319,22 @@ def ensure_control_tables(
     results = []
     for object_name, table_schema in CONTROL_TABLE_SCHEMAS.items():
         table_name = qualified_name(catalog, schema_name, object_name)
+        if object_name == "ingestion_watermarks" and spark.catalog.tableExists(
+            table_name
+        ):
+            actual_names = {field.name for field in spark.table(table_name).schema.fields}
+            if "last_successful_bronze_run_id" not in actual_names:
+                spark.sql(
+                    f"ALTER TABLE {table_name} ADD COLUMNS "
+                    "(last_successful_bronze_run_id STRING)"
+                )
+                if "last_successful_silver_run_id" in actual_names:
+                    spark.sql(
+                        f"UPDATE {table_name} "
+                        "SET last_successful_bronze_run_id = "
+                        "last_successful_silver_run_id "
+                        "WHERE last_successful_bronze_run_id IS NULL"
+                    )
         action = ensure_delta_table(spark, table_name, table_schema)
         results.append({"table_name": table_name, "action": action})
     return results

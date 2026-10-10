@@ -15,7 +15,7 @@ import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import unquote, urlparse
 
 import requests
@@ -27,6 +27,7 @@ CMS_API_BASE = "https://data.cms.gov/provider-data/api/1"
 DEFAULT_PAGE_SIZE = 500
 DEFAULT_OVERLAP_DAYS = 60
 USER_AGENT = "carewatch-medallion/1.0 (academic data engineering project)"
+ProgressCallback = Callable[[str], None]
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,8 @@ def resolve_window_start(
         return explicit_start
     if last_successful_watermark is None:
         raise ValueError(
-            "No successful Silver watermark exists. Run the initial full load or provide start_date."
+            "No successful Bronze extraction watermark exists. Complete the initial full load "
+            "through Raw-to-Bronze, or use the explicit backfill flow."
         )
     return last_successful_watermark - timedelta(days=overlap_days)
 
@@ -134,6 +136,13 @@ def create_http_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": USER_AGENT, "Accept": "application/json, text/csv, */*"})
     return session
+
+
+def bulk_publication_key(source_url: str, catalog_modified: date | None) -> str:
+    """Return a stable key used to skip an unchanged CMS bulk publication."""
+
+    modified = catalog_modified.isoformat() if catalog_modified else ""
+    return f"{modified}|{source_url}"
 
 
 def _get_json(
@@ -324,14 +333,70 @@ def _acquire_bulk_snapshot(
     config: DatasetConfig,
     session: requests.Session,
     existing_files_by_content_hash: Mapping[str, str],
+    existing_bulk_by_publication: Mapping[str, Mapping[str, Any]],
     *,
     strategy: str,
+    progress: ProgressCallback | None = None,
 ) -> AcquisitionResult:
     item, _ = get_catalog_item(session, config.dataset_id)
     source_url = select_csv_distribution(item)
+    catalog_modified = _catalog_modified(item)
+    publication_key = bulk_publication_key(source_url, catalog_modified)
+    prior = existing_bulk_by_publication.get(publication_key)
+    if prior and not request.force_refresh:
+        prior_path = str(prior.get("landing_path") or "")
+        if prior_path and Path(prior_path).is_file():
+            if progress:
+                progress(
+                    f"[{config.name}] unchanged CMS publication; reusing {prior_path}"
+                )
+            now = datetime.now(timezone.utc)
+            expected = prior.get("expected_run_rows")
+            content_digest = str(prior["source_content_sha256"])
+            acquired = AcquiredFile(
+                acquisition_run_id=request.acquisition_run_id,
+                dataset=config.name,
+                dataset_id=config.dataset_id,
+                load_type=request.load_type,
+                acquisition_strategy=strategy,
+                source_url=source_url,
+                source_catalog_modified=catalog_modified,
+                window_start=None,
+                window_end=None,
+                page_offset=None,
+                landing_path=prior_path,
+                batch_id=_batch_id(
+                    config.name, request.load_type, source_url, content_digest
+                ),
+                source_content_sha256=content_digest,
+                source_file_sha256=str(prior["source_file_sha256"]),
+                source_bytes=int(prior["source_bytes"]),
+                expected_run_rows=int(expected) if expected is not None else None,
+                source_rows=(
+                    int(prior["source_rows"])
+                    if prior.get("source_rows") is not None
+                    else None
+                ),
+                row_count_validated=bool(prior.get("row_count_validated", False)),
+                status="SKIPPED_ALREADY_ACQUIRED",
+                error_message=None,
+                load_timestamp=now,
+            )
+            return AcquisitionResult(
+                acquisition_run_id=request.acquisition_run_id,
+                dataset=config.name,
+                load_type=request.load_type,
+                strategy=strategy,
+                files=(acquired,),
+                expected_rows=acquired.expected_run_rows,
+                acquired_rows=acquired.source_rows,
+            )
+
     landing_dir = _landing_directory(request, strategy)
     source_name = _safe_filename_from_url(source_url, config.name)
     temporary_path = landing_dir / f".{source_name}.{uuid.uuid4().hex}.partial"
+    if progress:
+        progress(f"[{config.name}] downloading CMS bulk snapshot")
     digest, size = _stream_to_temporary_file(session, source_url, temporary_path)
     expected_rows = get_dataset_count(session, config.dataset_id)
     now = datetime.now(timezone.utc)
@@ -356,7 +421,7 @@ def _acquire_bulk_snapshot(
         load_type=request.load_type,
         acquisition_strategy=strategy,
         source_url=source_url,
-        source_catalog_modified=_catalog_modified(item),
+        source_catalog_modified=catalog_modified,
         window_start=None,
         window_end=None,
         page_offset=None,
@@ -418,6 +483,7 @@ def _acquire_api_window(
     last_successful_watermark: date | None,
     *,
     page_size: int = DEFAULT_PAGE_SIZE,
+    progress: ProgressCallback | None = None,
 ) -> AcquisitionResult:
     window_start = resolve_window_start(
         request.start_date, last_successful_watermark, request.overlap_days
@@ -532,6 +598,14 @@ def _acquire_api_window(
                 )
             )
             acquired_rows += len(results)
+            if progress:
+                expected_label = (
+                    f"{expected_rows:,}" if expected_rows is not None else "unknown"
+                )
+                progress(
+                    f"[{config.name}] offset={offset:,}; page_rows={len(results):,}; "
+                    f"acquired={acquired_rows:,}/{expected_label}"
+                )
 
             if len(results) < page_size:
                 break
@@ -562,21 +636,36 @@ def acquire_dataset(
     *,
     last_successful_watermark: date | None = None,
     existing_files_by_content_hash: Mapping[str, str] | None = None,
+    existing_bulk_by_publication: Mapping[str, Mapping[str, Any]] | None = None,
     session: requests.Session | None = None,
+    progress: ProgressCallback | None = None,
 ) -> AcquisitionResult:
     """Acquire one configured dataset according to the locked Phase 2 strategy."""
 
     config = get_dataset(request.dataset)
     http = session or create_http_session()
     existing = existing_files_by_content_hash or {}
+    publications = existing_bulk_by_publication or {}
 
     if request.load_type == "full":
         return _acquire_bulk_snapshot(
-            request, config, http, existing, strategy="bulk_snapshot"
+            request,
+            config,
+            http,
+            existing,
+            publications,
+            strategy="bulk_snapshot",
+            progress=progress,
         )
     if config.incremental_strategy == "snapshot_diff":
         return _acquire_bulk_snapshot(
-            request, config, http, existing, strategy="snapshot_diff"
+            request,
+            config,
+            http,
+            existing,
+            publications,
+            strategy="snapshot_diff",
+            progress=progress,
         )
     return _acquire_api_window(
         request,
@@ -584,4 +673,5 @@ def acquire_dataset(
         http,
         existing,
         last_successful_watermark,
+        progress=progress,
     )

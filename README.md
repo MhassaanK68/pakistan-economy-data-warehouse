@@ -86,7 +86,15 @@ us-healthcare-warehouse/
 │   ├── data_analysis_project_proposal.md
 │   ├── phase2_guidelines.md
 │   └── bronze_silver_schema_contract.md
-├── ingestion/
+├── notebooks/
+│   ├── 00_setup_tables.py
+│   ├── 01_acquire_cms.py
+│   ├── 02_raw_to_bronze.py
+│   ├── 03_bronze_to_silver.py
+│   ├── 98_cleanup_mistaken_incremental.py
+│   └── 99_demo_idempotency_drift_backfill.py
+├── src/carewatch/
+├── initial_ingestion_samples/
 │   └── initial_fetch_for_samples.py
 ├── .gitignore
 └── README.md
@@ -154,7 +162,7 @@ The Bronze and Silver implementation must satisfy the following requirements:
 3. Refresh Provider and MDS data through newly published CMS snapshots and merge only changed/new target rows.
 4. Define every input with explicit PySpark `StructType` and `StructField` schemas; do not use `inferSchema`.
 5. Add `load_timestamp` to every record in every table.
-6. Run acquisition for all registered datasets automatically, using today UTC as the upper bound, registry-defined first-run history starts, and parameterized load type, paths, batch ID, catalog, schema, and landing root.
+6. Run acquisition for all registered datasets automatically, using today UTC as the upper bound, a successful Bronze extraction watermark for normal API incrementals, and parameterized load type, paths, batch ID, catalog, schema, and landing root. Registry history starts are reserved for explicit backfills.
 7. Support both standard incremental runs and reproducible historical backfills.
 8. Use append-only Bronze tables with source lineage.
 9. Use deterministic business keys, row hashes, and Delta `MERGE` in Silver.
@@ -164,6 +172,15 @@ The Bronze and Silver implementation must satisfy the following requirements:
 13. Demonstrate automated full-load, incremental, idempotency, schema-drift, quarantine, and backfill scenarios.
 
 See [Phase 2 guidelines](docs/phase2_guidelines.md) for the implementation sequence and evidence checklist.
+
+### Cleaning the accidental 2026-10-10 API bootstrap
+
+Run `notebooks/98_cleanup_mistaken_incremental.py` in Databricks twice:
+
+1. Leave `confirmation` empty. Review the preview counts and paths. The notebook must report that all safety checks passed.
+2. Set `confirmation` to `DELETE_MISTAKEN_API_BOOTSTRAP_2026_10_10` and run it again.
+
+The cleanup is limited to Health Deficiencies and Penalties API windows that began at their registry history dates and ended on `2026-10-10`. It refuses batches referenced by Bronze, Silver, another manifest, or a watermark. It deletes only exact manifest-listed files and their matching acquisition manifest/execution-log rows; it never recursively deletes a Volume directory.
 
 ## Planned implementation order
 
@@ -200,6 +217,8 @@ Completed:
 - Step 2 CMS acquisition: registry, metastore-driven bulk downloads, paginated API loads, snapshot refreshes, landing manifests, and watermark lookup
 - Step 3 explicit Bronze schemas: all-string source contracts, typed lineage metadata, incremental JSON envelopes, and strict bulk-header mapping
 - Step 4 operational controls: idempotent Delta table setup, typed execution logs, acquisition audit integration, watermarks, drift logs, and Silver quarantine contracts
+- Bronze-checkpoint acquisition safeguards: no history fallback, exact-window reuse, pending-Bronze blocking, unchanged-snapshot preflight, and page progress
+- Guarded cleanup notebook for the accidental 2026-10-10 history-wide API acquisition
 
 Still to be implemented:
 
