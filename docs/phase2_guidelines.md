@@ -47,7 +47,7 @@ These decisions were reviewed and locked on **2026-10-10**. Implementations must
 9. **Drift policy.** Added columns evolve Bronze and are logged; Silver ignores them until its explicit contract is deliberately updated. Missing/renamed expected columns reject that file without stopping other files. Corrupt CSV rows go to Bronze quarantine. Values that fail Silver casting or business rules go to Silver quarantine.
 10. **Silver and privacy.** Silver uses strict types, deterministic entity keys, business-only row hashes, and Delta `MERGE`. CCN, ZIP, deficiency tag number, measure code, fine ID, chain ID, and other identifiers stay strings even when CMS labels them numeric. Drop `telephone_number`. Replace `provider_address` with a salted SHA-256 `provider_address_hash`, and drop `location` because it repeats the street address. Keep city, state, and ZIP for geography.
 11. **Full and incremental acquisition.** Initial and reconciliation full loads discover and download CMS bulk CSV snapshots inside Databricks. Health Deficiencies and Penalties use paginated, date-filtered CMS datastore queries for incrementals with a default 60-day safety overlap. Provider Information and MDS Quality Measures have no reliable event-date feed, so their refresh strategy is a newly published full CMS snapshot followed by hash-aware Silver `MERGE`; source extraction is full, but only inserted/changed target rows are written. No full-load file is manually uploaded.
-12. **Incremental processing and backfills.** With no explicit filters, Silver processes successful Bronze batches that do not yet have a successful Silver log entry. API watermarks advance only after the corresponding Silver run succeeds. Backfills select an explicit source date window, file, or batch. Every acquisition run has an explicit `as_of_date`; dates, paths, and table names must not be hard-coded inside pipeline functions.
+12. **Incremental processing and backfills.** With no explicit filters, Silver processes successful Bronze batches that do not yet have a successful Silver log entry. API watermarks advance only after the corresponding Silver run succeeds. The standard acquisition autorun processes all four datasets and derives `as_of_date` from the current UTC date. The two verified event-feed history starts are registry configuration, not function literals. Backfills select an explicit source date window, file, or batch through the dedicated backfill flow.
 13. **Deletion policy.** Infer soft deletes only from a complete bulk snapshot that passed acquisition and row-count validation, and only within that snapshot’s explicitly supplied scope. Never infer deletions from API-window incrementals, partial files, or failed downloads.
 14. **Audit model.** Write execution logs for `CMS-to-Landing`, `Raw-to-Bronze`, and `Bronze-to-Silver`. Use `SUCCESS`, `SKIPPED_ALREADY_ACQUIRED`, `QUARANTINED_PARTIAL`, and `FAILURE`; record parameters, source URL, UTC start/end times, row metrics, and truncated errors. Every data, manifest, watermark, quarantine, drift, and log table includes `load_timestamp`.
 15. **Team ownership.** Hassan owns CMS acquisition, configuration, explicit schemas, Raw-to-Bronze, and drift handling. Hanan owns the audit framework, watermarks, Bronze-to-Silver, Delta merges, generated data dictionary, and evidence. Agree on and implement the logging and watermark interfaces before parallel pipeline work.
@@ -101,24 +101,21 @@ Notebooks can import `src/carewatch` after `sys.path.append("/Workspace/.../care
 
 ## 3. Step 2: Automated CMS acquisition, parameters, and config (half a day)
 
-**Rule: no full-load file is uploaded manually.** `01_acquire_cms.py` must create the landing files from official CMS endpoints. No path, date, dataset ID, table name, or watermark is hard-coded inside an acquisition or transformation function.
+**Rule: no full-load file is uploaded manually.** `01_acquire_cms.py` creates landing files for all four registered datasets from official CMS endpoints in one run. Dataset IDs and the two verified historical event-feed start dates live in the registry; paths, table names, and watermarks are not hard-coded inside acquisition functions.
 
 ### Acquisition widgets
 
 ```python
 # notebooks/01_acquire_cms.py
-dbutils.widgets.text("dataset", "health_deficiencies")
 dbutils.widgets.dropdown("load_type", "full", ["full", "incremental"])
-dbutils.widgets.text("as_of_date", "")          # required YYYY-MM-DD; never derive silently from today
-dbutils.widgets.text("start_date", "")          # optional explicit incremental/backfill start
-dbutils.widgets.text("overlap_days", "60")      # used when start_date is empty
+dbutils.widgets.text("overlap_days", "60")      # applied to successful Silver watermarks
 dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.text("catalog", "carewatch")
 dbutils.widgets.text("schema", "pipeline")
 dbutils.widgets.text("landing_root", "/Volumes/carewatch/pipeline/landing")
 ```
 
-`as_of_date` is mandatory so the same run can be reproduced later. For a normal incremental, an empty `start_date` means “read the last successful Silver watermark and subtract `overlap_days`.” `force_refresh=false` skips content already registered successfully by SHA-256.
+The standard acquisition run sets `as_of_date` to the current UTC date and records it in every manifest row; users are not prompted for dates. On the first API incremental without a Silver watermark, Health Deficiencies starts at `2017-03-23` and Penalties at `2023-09-17`, the earliest dates observed in the locked full snapshots. Later API incrementals use the last successful Silver watermark minus `overlap_days`. `force_refresh=false` skips content already registered successfully by SHA-256. Historical backfill overrides belong in the dedicated backfill/evidence flow rather than the standard autorun notebook.
 
 For a bulk snapshot, `as_of_date` labels the acquisition run; it does not make the mutable CMS “current download” URL historical. Reproducibility comes from retaining the downloaded bytes, resolved URL, CMS catalog-modified date, and SHA-256 in the manifest.
 
@@ -135,6 +132,7 @@ DATASETS = {
         "dataset_id": "r5ix-sfxw",
         "incremental_strategy": "api_date_window",
         "watermark_col": "survey_date",
+        "history_start_date": "2017-03-23",
         "bronze_table": "bronze_nh_health_deficiencies",
         "silver_table": "silver_deficiency",
         "key_cols": ["cms_certification_number_ccn", "survey_date", "survey_type",
@@ -144,6 +142,7 @@ DATASETS = {
         "dataset_id": "g6vv-u9sr",
         "incremental_strategy": "api_date_window",
         "watermark_col": "penalty_date",
+        "history_start_date": "2023-09-17",
         "bronze_table": "bronze_nh_penalties",
         "silver_table": "silver_penalty",
         "key_cols": ["cms_certification_number_ccn", "penalty_date", "penalty_type",
@@ -153,6 +152,7 @@ DATASETS = {
         "dataset_id": "4pq5-n9py",
         "incremental_strategy": "snapshot_diff",
         "watermark_col": None,
+        "history_start_date": None,
         "bronze_table": "bronze_nh_provider_info",
         "silver_table": "silver_facility",
         "key_cols": ["cms_certification_number_ccn"],
@@ -161,6 +161,7 @@ DATASETS = {
         "dataset_id": "djen-97ju",
         "incremental_strategy": "snapshot_diff",
         "watermark_col": None,
+        "history_start_date": None,
         "bronze_table": "bronze_nh_mds_quality",
         "silver_table": "silver_mds_quality",
         "key_cols": ["cms_certification_number_ccn", "measure_code", "resident_type",
@@ -213,8 +214,8 @@ On failure, remove only that run’s `.partial` file, write a `CMS-to-Landing` f
 
 **Health Deficiencies and Penalties — API date window**
 
-1. Determine `window_start` from explicit `start_date`, otherwise from the last successful Silver watermark minus 60 days. If neither exists, fail with an instruction to run the initial full load; never guess an unbounded incremental start.
-2. Use `as_of_date` as the inclusive upper bound.
+1. Determine `window_start` from the last successful Silver watermark minus 60 days. If no watermark exists, use that dataset's verified `history_start_date` from the registry.
+2. Use the current UTC date (`as_of_date`) as the inclusive upper bound and record it in the manifest.
 3. Query the datastore API with conditions on the configured watermark column, `limit=500`, and increasing `offset`.
 4. Write each returned page immediately as a separate JSON landing part; do not accumulate all pages in driver memory.
 5. Record the exact filter, page offset, result count, URL parameters, and content SHA-256 in `source_file_manifest`.
@@ -644,15 +645,15 @@ Create **test files** for the demo (Step 10): copy a sample CSV, (1) add a colum
 
 | Scenario | Notebook | Parameters |
 |---|---|---|
-| **Initial full load** | `01_acquire_cms` → `02_raw_to_bronze` → `03_bronze_to_silver` | `dataset=health_deficiencies`, `load_type=full`, explicit `as_of_date`; Databricks discovers and downloads the CMS bulk CSV |
-| **Event incremental** | Same three notebooks | Health Deficiencies/Penalties with `load_type=incremental`; empty `start_date` uses successful watermark minus overlap; explicit `as_of_date` is upper bound |
+| **Initial full load** | `01_acquire_cms` → `02_raw_to_bronze` → `03_bronze_to_silver` | `load_type=full`; one acquisition run downloads all four registered CMS bulk CSVs and uses the current UTC date |
+| **Event incremental** | Same three notebooks | `load_type=incremental`; Health Deficiencies/Penalties use successful watermark minus overlap, or their registry history start on the first run; today UTC is the upper bound |
 | **Snapshot-diff incremental** | Same three notebooks | Provider/MDS with `load_type=incremental`; Databricks checks for a new CMS snapshot, downloads it if new, and MERGEs only new/changed rows |
-| **Source-date backfill** | `01_acquire_cms` → downstream notebooks | API dataset with explicit `start_date`, `as_of_date`, and `force_refresh=false` |
+| **Source-date backfill** | `99_demo_idempotency_drift_backfill` → downstream notebooks | Dedicated evidence flow supplies an explicit historical window without adding date prompts to the standard autorun |
 | **Reprocess one acquired file** | `02_raw_to_bronze` | `source_path=<landing_path from source_file_manifest>`; no local upload |
 | **Reprocess by batch** | `03_bronze_to_silver` | `batch_id=<id from pipeline_execution_logs>` |
 | **Reprocess an ingestion window** | `03_bronze_to_silver` | `ingest_date_from=2026-08-01`, `ingest_date_to=2026-08-31`, `reprocess=true` |
 
-Three checks that you really are parameterized: (1) grep the repo for `"2026-` and release-specific CMS download URLs and make sure they appear only in docs/tests; (2) `/Volumes/` appears only in widget defaults/config, not transformation functions; (3) the same notebooks run for a different dataset by changing only the `dataset` widget.
+Three checks that you really are parameterized: (1) release-specific CMS download URLs appear only in evidence, never pipeline code; the only fixed source dates are the two verified registry history starts; (2) `/Volumes/` appears only in widget defaults/config, not transformation functions; (3) one notebook run iterates the registry and processes all four datasets.
 
 If Jobs are not available on your plan, running notebooks manually with widgets is fine; say so in the README.
 
@@ -665,7 +666,7 @@ Run `99_demo_idempotency_drift_backfill.py` and keep the outputs:
 1. **Automated full acquisition:** start with an empty landing path, run `01_acquire_cms` with `load_type=full`, and show that Databricks resolved the CMS URL, created the file, computed its hash, and wrote a successful manifest/log row. The evidence must not rely on a manually uploaded full-load file.
 2. **Acquisition idempotency:** rerun the same full acquisition. Show `SKIPPED_ALREADY_ACQUIRED`, the same content hash, and no second physical copy or Bronze duplication.
 3. **Pipeline idempotency:** run Raw-to-Bronze then Bronze-to-Silver. Record `COUNT(*)` and `COUNT(DISTINCT key)` of Bronze and Silver. Run both again. Counts remain identical, and the second Silver log row shows `rows_inserted = 0, rows_updated = 0`.
-4. **API incremental:** run Health Deficiencies or Penalties with an explicit `as_of_date`; show paginated landing JSON, the 60-day overlap filter, manifest pages, and only new/changed Silver keys.
+4. **API incremental:** run with `load_type=incremental`; show paginated landing JSON for Health Deficiencies and Penalties, the history-start or 60-day overlap filter, the dynamic UTC upper bound, manifest pages, and only new/changed Silver keys.
 5. **Watermark safety:** show the watermark before and after successful Silver completion. Demonstrate that a deliberately failed Silver run does not advance it.
 6. **Snapshot-diff incremental:** acquire a new Provider or MDS bulk snapshot and show that unchanged row hashes are not updated while changed/new keys are merged.
 7. **Update:** alter one value only in a controlled test copy after acquisition; one Silver row is updated and only that row's `load_timestamp` changes.
@@ -712,7 +713,7 @@ Final checklist (tick all before submitting the repo link):
 - [ ] Provider/MDS refreshes use new CMS snapshots plus row-hash MERGE, not a fabricated event-date incremental
 - [ ] Every Bronze and Silver table, plus the log tables, has `load_timestamp`
 - [ ] Silver written only via `MERGE INTO`; rerun shows 0 inserted / 0 updated
-- [ ] All notebooks use widgets/parameters; no hard-coded dates or paths
+- [ ] Standard acquisition uses today UTC, all four registry datasets, and no date prompts; only the two verified history-start dates are fixed in config
 - [ ] Drift demo and quarantine tables populated, batch does not crash
 - [ ] `pipeline_execution_logs` has `CMS-to-Landing`, `Raw-to-Bronze`, and `Bronze-to-Silver` rows for full and incremental processing
 - [ ] README has Bronze model, Silver model, backfill-vs-incremental guide

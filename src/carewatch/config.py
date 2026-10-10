@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from datetime import date
 from typing import Literal
 
 
@@ -18,6 +19,7 @@ class DatasetConfig:
     dataset_id: str
     incremental_strategy: IncrementalStrategy
     watermark_col: str | None
+    history_start_date: date | None
     bronze_table: str
     silver_table: str
     key_cols: tuple[str, ...]
@@ -29,6 +31,7 @@ DATASETS: dict[str, DatasetConfig] = {
         dataset_id="r5ix-sfxw",
         incremental_strategy="api_date_window",
         watermark_col="survey_date",
+        history_start_date=date(2017, 3, 23),
         bronze_table="bronze_nh_health_deficiencies",
         silver_table="silver_deficiency",
         key_cols=(
@@ -45,6 +48,7 @@ DATASETS: dict[str, DatasetConfig] = {
         dataset_id="g6vv-u9sr",
         incremental_strategy="api_date_window",
         watermark_col="penalty_date",
+        history_start_date=date(2023, 9, 17),
         bronze_table="bronze_nh_penalties",
         silver_table="silver_penalty",
         key_cols=(
@@ -60,6 +64,7 @@ DATASETS: dict[str, DatasetConfig] = {
         dataset_id="4pq5-n9py",
         incremental_strategy="snapshot_diff",
         watermark_col=None,
+        history_start_date=None,
         bronze_table="bronze_nh_provider_info",
         silver_table="silver_facility",
         key_cols=("cms_certification_number_ccn",),
@@ -69,6 +74,7 @@ DATASETS: dict[str, DatasetConfig] = {
         dataset_id="djen-97ju",
         incremental_strategy="snapshot_diff",
         watermark_col=None,
+        history_start_date=None,
         bronze_table="bronze_nh_mds_quality",
         silver_table="silver_mds_quality",
         key_cols=(

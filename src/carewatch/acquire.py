@@ -252,9 +252,16 @@ def _stream_to_temporary_file(
         digest = hashlib.sha256()
         size = 0
         try:
-            with session.get(url, stream=True, timeout=(30, 300)) as response:
+            with session.get(
+                url,
+                stream=True,
+                timeout=(30, 300),
+                headers={"Accept-Encoding": "identity"},
+            ) as response:
                 response.raise_for_status()
                 declared_length = response.headers.get("Content-Length")
+                transfer_encoding = response.headers.get("Transfer-Encoding", "").lower()
+                content_encoding = response.headers.get("Content-Encoding", "").lower()
                 with temporary_path.open("wb") as output:
                     for chunk in response.iter_content(chunk_size=1024 * 1024):
                         if chunk:
@@ -263,7 +270,12 @@ def _stream_to_temporary_file(
                             size += len(chunk)
             if size == 0:
                 raise ValueError("CMS returned an empty bulk file")
-            if declared_length is not None and size != int(declared_length):
+            if (
+                declared_length is not None
+                and "chunked" not in transfer_encoding
+                and not content_encoding
+                and size != int(declared_length)
+            ):
                 raise ValueError(
                     f"Incomplete bulk download: expected {declared_length} bytes, received {size}"
                 )
@@ -273,7 +285,14 @@ def _stream_to_temporary_file(
             temporary_path.unlink(missing_ok=True)
             if attempt + 1 < retries:
                 time.sleep(2**attempt)
-    raise RuntimeError(f"Bulk download failed after {retries} attempts: {url}") from last_error
+    detail = (
+        f"{type(last_error).__name__}: {last_error}"
+        if last_error is not None
+        else "unknown error"
+    )
+    raise RuntimeError(
+        f"Bulk download failed after {retries} attempts: {url}. Last error: {detail}"
+    ) from last_error
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, Any]) -> tuple[str, int]:

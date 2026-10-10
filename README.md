@@ -154,7 +154,7 @@ The Bronze and Silver implementation must satisfy the following requirements:
 3. Refresh Provider and MDS data through newly published CMS snapshots and merge only changed/new target rows.
 4. Define every input with explicit PySpark `StructType` and `StructField` schemas; do not use `inferSchema`.
 5. Add `load_timestamp` to every record in every table.
-6. Parameterise acquisition dates, dataset, load type, paths, batch ID, catalog, schema, and landing root.
+6. Run acquisition for all registered datasets automatically, using today UTC as the upper bound, registry-defined first-run history starts, and parameterized load type, paths, batch ID, catalog, schema, and landing root.
 7. Support both standard incremental runs and reproducible historical backfills.
 8. Use append-only Bronze tables with source lineage.
 9. Use deterministic business keys, row hashes, and Delta `MERGE` in Silver.
