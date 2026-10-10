@@ -198,14 +198,14 @@ Completed:
 - Detailed Phase 2 implementation guide
 - Locked, API-verified Bronze and Silver schema contract
 - Step 2 CMS acquisition: registry, metastore-driven bulk downloads, paginated API loads, snapshot refreshes, landing manifests, and watermark lookup
+- Step 3 explicit Bronze schemas: all-string source contracts, typed lineage metadata, incremental JSON envelopes, and strict bulk-header mapping
+- Step 4 operational controls: idempotent Delta table setup, typed execution logs, acquisition audit integration, watermarks, drift logs, and Silver quarantine contracts
 
 Still to be implemented:
 
-- Databricks setup and control-table creation
-- Explicit PySpark schemas
 - Bronze ingestion
 - Silver validation and Delta merges
-- Quarantine and audit logging
+- Bronze/Silver quarantine processing and transformation-layer audit integration
 - Automated tests and evidence notebooks
 - Gold analytical model
 - Power BI dashboard

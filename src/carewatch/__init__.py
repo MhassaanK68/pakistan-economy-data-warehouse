@@ -1,2 +1,0 @@
-"""CareWatch medallion pipeline package."""
-

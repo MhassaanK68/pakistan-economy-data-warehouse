@@ -1,11 +1,5 @@
-# Databricks notebook source
-# /// script
-# [tool.databricks.environment]
-# environment_version = "6"
-# ///
-"""Acquire CMS full snapshots or incrementals into a Unity Catalog Volume."""
 
-# COMMAND ----------
+"""Acquire CMS full snapshots or incrementals into a Unity Catalog Volume."""
 
 import sys
 from datetime import datetime, timezone
@@ -32,6 +26,14 @@ from carewatch.acquire import (  # noqa: E402
     AcquisitionRequest,
     acquire_dataset,
     parse_bool,
+)
+from carewatch.audit import (  # noqa: E402
+    LOG_SCHEMA,
+    MANIFEST_SCHEMA,
+    append_typed_records,
+    completed_log_record,
+    utc_now,
+    write_execution_log,
 )
 from carewatch.config import DATASETS, qualified_name  # noqa: E402
 from carewatch.watermarks import read_successful_watermark, table_exists  # noqa: E402
@@ -73,44 +75,11 @@ manifest_table = qualified_name(
 watermark_table = qualified_name(
     PARAMETERS["catalog"], PARAMETERS["schema"], "ingestion_watermarks"
 )
+execution_log_table = qualified_name(
+    PARAMETERS["catalog"], PARAMETERS["schema"], "pipeline_execution_logs"
+)
 
 from pyspark.sql import functions as F
-from pyspark.sql.types import (
-    BooleanType,
-    DateType,
-    LongType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
-
-
-MANIFEST_SCHEMA = StructType(
-    [
-        StructField("acquisition_run_id", StringType(), False),
-        StructField("dataset", StringType(), False),
-        StructField("dataset_id", StringType(), False),
-        StructField("load_type", StringType(), False),
-        StructField("acquisition_strategy", StringType(), False),
-        StructField("source_url", StringType(), False),
-        StructField("source_catalog_modified", DateType(), True),
-        StructField("window_start", DateType(), True),
-        StructField("window_end", DateType(), True),
-        StructField("page_offset", LongType(), True),
-        StructField("landing_path", StringType(), False),
-        StructField("batch_id", StringType(), False),
-        StructField("source_content_sha256", StringType(), False),
-        StructField("source_file_sha256", StringType(), False),
-        StructField("source_bytes", LongType(), False),
-        StructField("expected_run_rows", LongType(), True),
-        StructField("source_rows", LongType(), True),
-        StructField("row_count_validated", BooleanType(), False),
-        StructField("status", StringType(), False),
-        StructField("error_message", StringType(), True),
-        StructField("load_timestamp", TimestampType(), False),
-    ]
-)
 
 
 def existing_content_files(dataset_name: str) -> dict[str, str]:
@@ -140,6 +109,7 @@ manifest_records = []
 failures = []
 
 for dataset_config in DATASETS.values():
+    attempt_started = utc_now()
     last_watermark = None
     start_date = None
     if (
@@ -174,22 +144,70 @@ for dataset_config in DATASETS.values():
         if not records:
             raise RuntimeError("Acquisition completed without a manifest record")
 
-        (
-            spark.createDataFrame(records, schema=MANIFEST_SCHEMA)
-            .write.format("delta")
-            .mode("append")
-            .saveAsTable(manifest_table)
-        )
+        append_typed_records(spark, manifest_table, records, MANIFEST_SCHEMA)
         manifest_records.extend(records)
+
+        attempt_finished = utc_now()
+        execution_records = []
+        for item in result.files:
+            source_rows = (
+                item.source_rows
+                if item.source_rows is not None
+                else item.expected_run_rows or 0
+            )
+            execution_records.append(
+                completed_log_record(
+                    run_id=item.acquisition_run_id,
+                    batch_id=item.batch_id,
+                    pipeline_layer="CMS-to-Landing",
+                    dataset=item.dataset,
+                    load_type=item.load_type,
+                    parameter_processed=item.source_url,
+                    start_time=attempt_started,
+                    end_time=attempt_finished,
+                    status=item.status,
+                    rows_read=source_rows,
+                    rows_inserted=(
+                        source_rows if item.status == "SUCCESS" else 0
+                    ),
+                    error_message=item.error_message,
+                )
+            )
+        append_typed_records(
+            spark, execution_log_table, execution_records, LOG_SCHEMA
+        )
     except Exception as exc:
+        failure_message = f"{type(exc).__name__}: {exc}"[:2000]
         failures.append(
             {
                 "dataset": dataset_config.name,
                 "load_type": PARAMETERS["load_type"],
                 "as_of_date": as_of_date.isoformat(),
-                "error": f"{type(exc).__name__}: {exc}"[:2000],
+                "error": failure_message,
             }
         )
+        try:
+            write_execution_log(
+                spark,
+                execution_log_table,
+                completed_log_record(
+                    run_id=request.acquisition_run_id,
+                    batch_id="",
+                    pipeline_layer="CMS-to-Landing",
+                    dataset=dataset_config.name,
+                    load_type=PARAMETERS["load_type"],
+                    parameter_processed=(
+                        f"dataset={dataset_config.name};as_of_date={as_of_date.isoformat()}"
+                    ),
+                    start_time=attempt_started,
+                    status="FAILURE",
+                    error_message=failure_message,
+                ),
+            )
+        except Exception as log_error:
+            failures[-1]["error"] = (
+                f"{failure_message}; audit write also failed: {log_error}"
+            )[:2000]
 
 # COMMAND ----------
 
