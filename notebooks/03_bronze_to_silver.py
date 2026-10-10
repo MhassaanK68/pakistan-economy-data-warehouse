@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Databricks orchestration for manifest-driven Bronze-to-Silver processing."""
 
 # COMMAND ----------

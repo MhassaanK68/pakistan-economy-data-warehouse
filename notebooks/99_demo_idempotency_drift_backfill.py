@@ -1,3 +1,4 @@
+# Databricks notebook source
 """Evidence views for Raw-to-Bronze idempotency, drift, and backfill scope."""
 
 # COMMAND ----------
