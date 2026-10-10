@@ -57,6 +57,7 @@ MANIFEST_SCHEMA = StructType(
         StructField("dataset", StringType(), False),
         StructField("dataset_id", StringType(), False),
         StructField("load_type", StringType(), False),
+        StructField("as_of_date", DateType(), False),
         StructField("acquisition_strategy", StringType(), False),
         StructField("source_url", StringType(), False),
         StructField("source_catalog_modified", DateType(), True),
@@ -319,6 +320,20 @@ def ensure_control_tables(
     results = []
     for object_name, table_schema in CONTROL_TABLE_SCHEMAS.items():
         table_name = qualified_name(catalog, schema_name, object_name)
+        if object_name == "source_file_manifest" and spark.catalog.tableExists(
+            table_name
+        ):
+            actual_names = {field.name for field in spark.table(table_name).schema.fields}
+            if "as_of_date" not in actual_names:
+                # Existing Step 2 tables predate the explicit acquisition date.
+                # The log timestamp is the UTC acquisition time for bulk rows;
+                # API rows also have the authoritative inclusive window end.
+                spark.sql(f"ALTER TABLE {table_name} ADD COLUMNS (as_of_date DATE)")
+                spark.sql(
+                    f"UPDATE {table_name} "
+                    "SET as_of_date = COALESCE(window_end, CAST(load_timestamp AS DATE)) "
+                    "WHERE as_of_date IS NULL"
+                )
         if object_name == "ingestion_watermarks" and spark.catalog.tableExists(
             table_name
         ):

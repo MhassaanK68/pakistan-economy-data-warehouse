@@ -16,6 +16,8 @@ CareWatch is designed to help families, healthcare regulators, nursing-home oper
 - Which facilities receive the largest fines or payment denials?
 - How do deficiencies, penalties, and quality measures change over time?
 
+
+
 ## Data sources
 
 The source is the [CMS Provider Data Catalog](https://data.cms.gov/provider-data/), accessed through its bulk CSV downloads and public APIs.
@@ -46,6 +48,8 @@ Gold: facts, dimensions, scorecards, and BI aggregates
             v
 Power BI dashboards
 ```
+
+
 
 ### Bronze
 
@@ -204,6 +208,8 @@ Provider Information can initially use a Type 1 upsert. Slowly changing facility
 - Raw source values and ingestion lineage must remain available for auditing.
 - Missing numeric values must remain null rather than being converted to zero.
 
+
+
 ## Current status
 
 Completed:
@@ -220,7 +226,7 @@ Completed:
 - Bronze-checkpoint acquisition safeguards: no history fallback, exact-window reuse, pending-Bronze blocking, unchanged-snapshot preflight, and page progress
 - Guarded cleanup notebook for the accidental 2026-10-10 history-wide API acquisition
 
-Still to be implemented:
+Still to be implemented: 
 
 - Bronze ingestion
 - Silver validation and Delta merges
@@ -229,13 +235,18 @@ Still to be implemented:
 - Gold analytical model
 - Power BI dashboard
 
+
+
 ## Documentation
 
 - [Project proposal](docs/data_analysis_project_proposal.md)
 - [Phase 2 implementation guidelines](docs/phase2_guidelines.md)
 - [Bronze and Silver schema contract](docs/bronze_silver_schema_contract.md)
 
+
+
 ## Team
 
 - Hassan Mehmood — 24L2559, BDS-5B
 - Hanan Ishaq — 24L2537, BDS-5B
+

@@ -358,6 +358,7 @@ Also create:
 | `acquisition_run_id`         | string    | UUID for one acquisition invocation                                        |
 | `dataset`, `dataset_id`      | string    | registry key and CMS identifier                                            |
 | `load_type`                  | string    | `full` / `incremental`                                                     |
+| `as_of_date`                 | date      | UTC acquisition run date; present for every bulk file and API page         |
 | `acquisition_strategy`       | string    | `bulk_snapshot` / `api_date_window` / `snapshot_diff`                      |
 | `source_url`                 | string    | resolved official CMS URL without secrets                                  |
 | `source_catalog_modified`    | date      | metastore modified date when available                                     |

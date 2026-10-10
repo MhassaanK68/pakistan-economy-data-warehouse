@@ -59,6 +59,7 @@ class AcquiredFile:
     dataset: str
     dataset_id: str
     load_type: str
+    as_of_date: date
     acquisition_strategy: str
     source_url: str
     source_catalog_modified: date | None
@@ -358,6 +359,7 @@ def _acquire_bulk_snapshot(
                 dataset=config.name,
                 dataset_id=config.dataset_id,
                 load_type=request.load_type,
+                as_of_date=request.as_of_date,
                 acquisition_strategy=strategy,
                 source_url=source_url,
                 source_catalog_modified=catalog_modified,
@@ -398,54 +400,60 @@ def _acquire_bulk_snapshot(
     if progress:
         progress(f"[{config.name}] downloading CMS bulk snapshot")
     digest, size = _stream_to_temporary_file(session, source_url, temporary_path)
-    expected_rows = get_dataset_count(session, config.dataset_id)
-    now = datetime.now(timezone.utc)
+    try:
+        expected_rows = get_dataset_count(session, config.dataset_id)
+        now = datetime.now(timezone.utc)
 
-    existing_path = existing_files_by_content_hash.get(digest)
-    if existing_path and not request.force_refresh:
+        existing_path = existing_files_by_content_hash.get(digest)
+        if existing_path and not request.force_refresh:
+            temporary_path.unlink(missing_ok=True)
+            final_path = existing_path
+            status = "SKIPPED_ALREADY_ACQUIRED"
+        else:
+            stem = Path(source_name).stem
+            final_path_obj = landing_dir / f"{stem}_{digest[:12]}.csv"
+            final_path_obj.parent.mkdir(parents=True, exist_ok=True)
+            os.replace(temporary_path, final_path_obj)
+            final_path = str(final_path_obj)
+            status = "SUCCESS"
+
+        acquired = AcquiredFile(
+            acquisition_run_id=request.acquisition_run_id,
+            dataset=config.name,
+            dataset_id=config.dataset_id,
+            load_type=request.load_type,
+            as_of_date=request.as_of_date,
+            acquisition_strategy=strategy,
+            source_url=source_url,
+            source_catalog_modified=catalog_modified,
+            window_start=None,
+            window_end=None,
+            page_offset=None,
+            landing_path=final_path,
+            batch_id=_batch_id(config.name, request.load_type, source_url, digest),
+            source_content_sha256=digest,
+            source_file_sha256=digest,
+            source_bytes=size,
+            expected_run_rows=expected_rows,
+            source_rows=None,
+            row_count_validated=False,
+            status=status,
+            error_message=None,
+            load_timestamp=now,
+        )
+        return AcquisitionResult(
+            acquisition_run_id=request.acquisition_run_id,
+            dataset=config.name,
+            load_type=request.load_type,
+            strategy=strategy,
+            files=(acquired,),
+            expected_rows=expected_rows,
+            acquired_rows=None,
+        )
+    finally:
+        # This is the exact run-scoped temporary object. It may still exist if
+        # row-count validation or finalization failed after the download.
         temporary_path.unlink(missing_ok=True)
-        final_path = existing_path
-        status = "SKIPPED_ALREADY_ACQUIRED"
-    else:
-        stem = Path(source_name).stem
-        final_path_obj = landing_dir / f"{stem}_{digest[:12]}.csv"
-        final_path_obj.parent.mkdir(parents=True, exist_ok=True)
-        os.replace(temporary_path, final_path_obj)
-        final_path = str(final_path_obj)
-        status = "SUCCESS"
-
-    acquired = AcquiredFile(
-        acquisition_run_id=request.acquisition_run_id,
-        dataset=config.name,
-        dataset_id=config.dataset_id,
-        load_type=request.load_type,
-        acquisition_strategy=strategy,
-        source_url=source_url,
-        source_catalog_modified=catalog_modified,
-        window_start=None,
-        window_end=None,
-        page_offset=None,
-        landing_path=final_path,
-        batch_id=_batch_id(config.name, request.load_type, source_url, digest),
-        source_content_sha256=digest,
-        source_file_sha256=digest,
-        source_bytes=size,
-        expected_run_rows=expected_rows,
-        source_rows=None,
-        row_count_validated=False,
-        status=status,
-        error_message=None,
-        load_timestamp=now,
-    )
-    return AcquisitionResult(
-        acquisition_run_id=request.acquisition_run_id,
-        dataset=config.name,
-        load_type=request.load_type,
-        strategy=strategy,
-        files=(acquired,),
-        expected_rows=expected_rows,
-        acquired_rows=None,
-    )
 
 
 def _query_api_page(
@@ -576,6 +584,7 @@ def _acquire_api_window(
                     dataset=config.name,
                     dataset_id=config.dataset_id,
                     load_type=request.load_type,
+                    as_of_date=request.as_of_date,
                     acquisition_strategy="api_date_window",
                     source_url=source_url,
                     source_catalog_modified=None,
