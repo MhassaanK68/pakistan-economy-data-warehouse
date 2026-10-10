@@ -84,7 +84,8 @@ us-healthcare-warehouse/
 │       └── samples_manifest.json    # Source, row-count, and file metadata
 ├── docs/
 │   ├── data_analysis_project_proposal.md
-│   └── phase2_guidelines.md
+│   ├── phase2_guidelines.md
+│   └── bronze_silver_schema_contract.md
 ├── ingestion/
 │   └── initial_fetch_for_samples.py
 ├── .gitignore
@@ -94,6 +95,8 @@ us-healthcare-warehouse/
 The Phase 2 implementation will add Databricks notebooks, a reusable `src/carewatch` package, tests, operational SQL, and generated data-dictionary documentation.
 
 ## Preparing the sample data
+
+The files under `data/samples` are local profiling and schema-development evidence only. **They are not the Phase 2 full-load input and must not be uploaded to Databricks.** The production Phase 2 flow starts with an empty landing area; Databricks discovers and streams the official CMS bulk files itself and creates incremental landing pages through the CMS API.
 
 ### Prerequisites
 
@@ -146,26 +149,29 @@ Do not commit `data/raw/`. The generated manifest records the CMS dataset IDs, s
 
 The Bronze and Silver implementation must satisfy the following requirements:
 
-1. Define every input with explicit PySpark `StructType` and `StructField` schemas; do not use `inferSchema`.
-2. Add `load_timestamp` to every record in every table.
-3. Parameterise the dataset, load type, source path, batch ID, catalog, schema, and landing root.
-4. Support both standard incremental runs and reproducible historical backfills.
-5. Use append-only Bronze tables with source lineage.
-6. Use deterministic business keys, row hashes, and Delta `MERGE` in Silver.
-7. Make reruns idempotent: processing the same input twice must not create duplicates.
-8. Detect schema drift and either evolve compatible schemas deliberately or quarantine incompatible data.
-9. Record run status, timing, input parameters, and inserted, updated, unchanged, and quarantined row counts.
-10. Demonstrate full-load, incremental, idempotency, schema-drift, quarantine, and backfill scenarios.
+1. Acquire initial/full loads directly inside Databricks from CMS-discovered bulk URLs; do not upload full-load files manually.
+2. Acquire Health Deficiency and Penalty incrementals through paginated, date-windowed CMS API calls with a safety overlap and success-controlled watermarks.
+3. Refresh Provider and MDS data through newly published CMS snapshots and merge only changed/new target rows.
+4. Define every input with explicit PySpark `StructType` and `StructField` schemas; do not use `inferSchema`.
+5. Add `load_timestamp` to every record in every table.
+6. Parameterise acquisition dates, dataset, load type, paths, batch ID, catalog, schema, and landing root.
+7. Support both standard incremental runs and reproducible historical backfills.
+8. Use append-only Bronze tables with source lineage.
+9. Use deterministic business keys, row hashes, and Delta `MERGE` in Silver.
+10. Make reruns idempotent: processing the same input twice must not create duplicates.
+11. Detect schema drift and either evolve compatible schemas deliberately or quarantine incompatible data.
+12. Record acquisition manifests, watermarks, run status, timing, parameters, and row metrics.
+13. Demonstrate automated full-load, incremental, idempotency, schema-drift, quarantine, and backfill scenarios.
 
 See [Phase 2 guidelines](docs/phase2_guidelines.md) for the implementation sequence and evidence checklist.
 
 ## Planned implementation order
 
-1. Create the Databricks catalog/schema, landing areas, and operational log tables.
-2. Add a central dataset registry and explicit Bronze schemas.
-3. Implement the audit and schema-drift helpers.
-4. Build Health Deficiencies from raw input through Bronze and Silver.
-5. Profile and validate its candidate business key.
+1. Create the Databricks catalog/schema, empty landing areas, manifest, watermark, and operational log tables.
+2. Implement CMS metastore discovery, streaming bulk downloads, and paginated API acquisition.
+3. Add a central dataset registry and explicit Bronze schemas.
+4. Implement audit, watermark, and schema-drift helpers.
+5. Build Health Deficiencies from CMS acquisition through Bronze and Silver.
 6. Repeat the config-driven flow for penalties, provider information, and MDS quality measures.
 7. Add quarantine handling, backfill controls, and evidence notebooks.
 8. Create Gold facts, dimensions, aggregates, and the Power BI semantic model.
@@ -190,10 +196,12 @@ Completed:
 - Historical and incremental sample-generation utility
 - Sample manifest with source and volume metadata
 - Detailed Phase 2 implementation guide
+- Locked, API-verified Bronze and Silver schema contract
+- Step 2 CMS acquisition: registry, metastore-driven bulk downloads, paginated API loads, snapshot refreshes, landing manifests, and watermark lookup
 
 Still to be implemented:
 
-- Databricks setup and control tables
+- Databricks setup and control-table creation
 - Explicit PySpark schemas
 - Bronze ingestion
 - Silver validation and Delta merges
@@ -206,6 +214,7 @@ Still to be implemented:
 
 - [Project proposal](docs/data_analysis_project_proposal.md)
 - [Phase 2 implementation guidelines](docs/phase2_guidelines.md)
+- [Bronze and Silver schema contract](docs/bronze_silver_schema_contract.md)
 
 ## Team
 

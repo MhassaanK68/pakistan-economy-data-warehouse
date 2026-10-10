@@ -21,24 +21,38 @@ This guide tells you exactly what to build, in what order, and what evidence to 
 | 9 | Schema drift: evolve (`mergeSchema`) or quarantine, never crash the batch | Step 5, Step 7, Step 8 | Drift demo: new column + changed type |
 | 10 | Logging tables with layer, parameter/file, start/end, status, rows inserted/updated | Step 4 | `pipeline_execution_logs` query output |
 | 11 | README with Bronze + Silver models and execution guide | Step 11 | README |
+| 12 | Databricks performs full and incremental source loading; no manual full-load upload | Step 1, Step 2, Step 10 | Empty-landing full run, source manifest, incremental watermark evidence |
 
 Keep this table in your README as a "requirements traceability" section. Graders love it.
 
 ---
 
-## 1. Decisions to lock before writing code (30 min)
+## 1. Locked architectural decisions
 
-Decide these with your partner and write them in `docs/design_decisions.md`:
+These decisions were reviewed and locked on **2026-10-10**. Implementations must follow them unless a later architecture decision record explicitly supersedes one. The exact column contracts are in [`docs/bronze_silver_schema_contract.md`](bronze_silver_schema_contract.md).
 
-1. **Platform.** Your Phase 1 proposal says Databricks Free Edition. The instructor wrote "Community Edition". Free Edition replaced Community Edition, but **send your instructor one line to confirm it is acceptable** (or use Azure). Differences that matter: Free Edition uses Unity Catalog (`catalog.schema.table`, files in `/Volumes/...`) and serverless compute; Community Edition used `hive_metastore` and DBFS paths. Your code must take catalog/schema/paths as parameters so it works on either.
-2. **Datasets in scope for Phase 2.** Recommended: Health Deficiencies, Provider Information, Penalties, MDS Quality Measures (the four from the Phase 1 sample plan). Build them with one config-driven pipeline (Step 3) so each extra dataset costs about an hour, not a day.
-3. **Primary keys** (to be validated in Step 6):
-   - Deficiencies: CCN + survey date + survey type + deficiency prefix + tag number + inspection cycle (candidate, must be proven unique by profiling)
-   - Penalties: CCN + penalty date + penalty type + fine id + payment-denial start date
-   - Provider Information: CCN
-   - MDS Quality Measures: CCN + measure code + resident type + measure period (candidate)
-4. **Silver facility history.** Phase 1 promised SCD Type 2 for facilities. It is more work. Safe path: first implement a plain upsert (SCD Type 1) so every requirement is met, then add SCD2 only if time permits. If you do not do SCD2, **update the README and tell the instructor** rather than leaving the Phase 1 promise silently broken.
-5. **Who does what** (suggested): Partner A = config, schemas, Raw-to-Bronze, drift handling. Partner B = logging framework, Bronze-to-Silver, MERGE, README/data dictionary. Do the logging helper (Step 4) first, because both pipelines call it.
+1. **Platform and namespace.** Use Databricks Free Edition with Unity Catalog, managed Delta tables, and a managed Volume. The default namespace is `carewatch.pipeline`; the default landing root is `/Volumes/carewatch/pipeline/landing`. Catalog, schema, and paths remain parameters so the same code can run against a different Unity Catalog namespace or a legacy `hive_metastore`/DBFS profile. Confirm with the instructor that Free Edition satisfies the stated “Community Edition or Azure” requirement.
+2. **Datasets in scope.** Phase 2 covers Health Deficiencies, Provider Information, Penalties, and MDS Quality Measures. Build Health Deficiencies end to end first, then reuse one registry-driven pipeline for the other three.
+3. **Snapshot-validated business keys.** Profiling of the September 2026 full extracts found no null key components and no duplicate keys:
+   - Deficiencies: CCN + survey date + survey type + deficiency prefix + tag number + inspection cycle (`418,947` rows and distinct keys).
+   - Penalties: CCN + penalty date + penalty type + fine ID + payment-denial start date (`15,419` rows and distinct keys). The two event types populate different subtype fields; blanks are retained in the hash with an explicit null sentinel.
+   - Provider Information: CCN (`14,690` rows and distinct keys).
+   - MDS Quality Measures: CCN + measure code + resident type + measure period (`249,730` rows and distinct keys).
+   These are contracts for the profiled snapshot, not assumptions about all future releases. Re-run the uniqueness and null-key checks for every new full snapshot. Quarantine a release if the contract fails until the key is deliberately revised.
+4. **Facility history.** Implement `silver_facility` as SCD Type 1 keyed by CCN for Phase 2. SCD Type 2 is explicitly deferred until the required Bronze/Silver pipeline and evidence suite are complete. Confirm with the instructor whether SCD2 is mandatory before final submission.
+5. **Code structure.** Put reusable logic in `src/carewatch`; keep notebooks thin and limited to widgets, orchestration, and evidence display. Do not duplicate transformation logic between dataset notebooks.
+6. **Storage and acquisition.** Use managed, initially unpartitioned Delta tables. At this data volume, partitioning would create avoidable small files. Source files live in the landing Volume and raw downloads remain outside Git. **Do not manually upload full-load files to Databricks.** A Databricks acquisition notebook must discover the current official CMS distribution URL and stream the source into the Volume itself.
+7. **Bronze semantics.** Bronze uses canonical API names and stores every source field as nullable `STRING`, plus required non-null ingestion metadata. New batches append logically. A rerun of the same deterministic batch may replace only that batch, making ingestion idempotent while preserving all other source batches.
+8. **Identity and time.** `run_id` is a UUID per execution. Default `batch_id` is a deterministic SHA-256-derived identifier from dataset, load type, stable source identity (resolved bulk URL or API URL/filter/page), and source-content SHA-256; it must not include the acquisition run directory. A user-supplied batch ID overrides it. `source_file_sha256` hashes the exact landed bytes, while `source_content_sha256` is the stable idempotency identity (for API pages it excludes volatile envelope fields such as retrieval time). All operational timestamps are UTC. Source dates remain `DATE` values.
+9. **Drift policy.** Added columns evolve Bronze and are logged; Silver ignores them until its explicit contract is deliberately updated. Missing/renamed expected columns reject that file without stopping other files. Corrupt CSV rows go to Bronze quarantine. Values that fail Silver casting or business rules go to Silver quarantine.
+10. **Silver and privacy.** Silver uses strict types, deterministic entity keys, business-only row hashes, and Delta `MERGE`. CCN, ZIP, deficiency tag number, measure code, fine ID, chain ID, and other identifiers stay strings even when CMS labels them numeric. Drop `telephone_number`. Replace `provider_address` with a salted SHA-256 `provider_address_hash`, and drop `location` because it repeats the street address. Keep city, state, and ZIP for geography.
+11. **Full and incremental acquisition.** Initial and reconciliation full loads discover and download CMS bulk CSV snapshots inside Databricks. Health Deficiencies and Penalties use paginated, date-filtered CMS datastore queries for incrementals with a default 60-day safety overlap. Provider Information and MDS Quality Measures have no reliable event-date feed, so their refresh strategy is a newly published full CMS snapshot followed by hash-aware Silver `MERGE`; source extraction is full, but only inserted/changed target rows are written. No full-load file is manually uploaded.
+12. **Incremental processing and backfills.** With no explicit filters, Silver processes successful Bronze batches that do not yet have a successful Silver log entry. API watermarks advance only after the corresponding Silver run succeeds. Backfills select an explicit source date window, file, or batch. Every acquisition run has an explicit `as_of_date`; dates, paths, and table names must not be hard-coded inside pipeline functions.
+13. **Deletion policy.** Infer soft deletes only from a complete bulk snapshot that passed acquisition and row-count validation, and only within that snapshot’s explicitly supplied scope. Never infer deletions from API-window incrementals, partial files, or failed downloads.
+14. **Audit model.** Write execution logs for `CMS-to-Landing`, `Raw-to-Bronze`, and `Bronze-to-Silver`. Use `SUCCESS`, `SKIPPED_ALREADY_ACQUIRED`, `QUARANTINED_PARTIAL`, and `FAILURE`; record parameters, source URL, UTC start/end times, row metrics, and truncated errors. Every data, manifest, watermark, quarantine, drift, and log table includes `load_timestamp`.
+15. **Team ownership.** Hassan owns CMS acquisition, configuration, explicit schemas, Raw-to-Bronze, and drift handling. Hanan owns the audit framework, watermarks, Bronze-to-Silver, Delta merges, generated data dictionary, and evidence. Agree on and implement the logging and watermark interfaces before parallel pipeline work.
+
+Two decisions require external confirmation but do not block initial development: instructor acceptance of Databricks Free Edition, and whether SCD Type 2 is mandatory.
 
 ---
 
@@ -51,21 +65,28 @@ Decide these with your partner and write them in `docs/design_decisions.md`:
    /Volumes/<catalog>/<schema>/landing/incremental/
    /Volumes/<catalog>/<schema>/landing/archive/
    ```
-3. Upload your Phase 1 sample part files into `landing/full_load/` and the JSON files into `landing/incremental/`. **For development, upload only 1 or 2 part files**, not all 200+ MB. Save compute quota.
-4. Link GitHub: Workspace > Create > Git folder, paste your repo URL (needs a GitHub personal access token). If Git folders are not available on your plan, develop in notebooks and export/commit them manually after every session; the instructor wants a visible history either way.
-5. Repo layout to create now:
+3. Test outbound HTTPS from Databricks to both CMS endpoints used by the pipeline:
+   - `https://data.cms.gov/provider-data/api/1/metastore/schemas/dataset/items/<dataset-id>`
+   - `https://data.cms.gov/provider-data/api/1/datastore/query/<dataset-id>/0`
+   A request for one row must succeed before pipeline development continues. Save the response/status as setup evidence.
+4. **Do not upload the Phase 1 full-load CSV parts.** They are local profiling evidence only. The initial full load must be downloaded by Databricks from the bulk CSV URL returned by the CMS metastore. Incremental landing files must likewise be created by the acquisition notebook from the CMS datastore API or a newly published bulk snapshot.
+5. Link GitHub: Workspace > Create > Git folder, paste your repo URL (needs a GitHub personal access token). If Git folders are not available on your plan, develop in notebooks and export/commit them manually after every session; the instructor wants a visible history either way.
+6. Repo layout to create now:
 
 ```
 carewatch-medallion/
 ├── notebooks/
 │   ├── 00_setup_tables.py          # creates schemas + log tables (run once)
-│   ├── 01_raw_to_bronze.py         # parameterized
-│   ├── 02_bronze_to_silver.py      # parameterized
+│   ├── 01_acquire_cms.py            # CMS-to-Landing: full + incremental
+│   ├── 02_raw_to_bronze.py          # parameterized
+│   ├── 03_bronze_to_silver.py       # parameterized
 │   └── 99_demo_idempotency_drift_backfill.py
 ├── src/carewatch/
 │   ├── config.py                   # dataset registry + table names
 │   ├── schemas.py                  # explicit StructTypes (Bronze) + Silver typing rules
 │   ├── audit.py                    # logging helper
+│   ├── acquire.py                  # metastore discovery, downloads, API pagination
+│   ├── watermarks.py               # successful incremental checkpoints
 │   ├── drift.py                    # header/schema drift detection
 │   ├── bronze.py
 │   └── silver.py
@@ -78,52 +99,143 @@ Notebooks can import `src/carewatch` after `sys.path.append("/Workspace/.../care
 
 ---
 
-## 3. Step 2: Parameters and config (1 hour)
+## 3. Step 2: Automated CMS acquisition, parameters, and config (half a day)
 
-**Rule: no path, date or table name is hard-coded inside a function.** Every notebook starts with widgets:
+**Rule: no full-load file is uploaded manually.** `01_acquire_cms.py` must create the landing files from official CMS endpoints. No path, date, dataset ID, table name, or watermark is hard-coded inside an acquisition or transformation function.
+
+### Acquisition widgets
 
 ```python
-# notebooks/01_raw_to_bronze.py  (top cell)
-dbutils.widgets.text("dataset", "health_deficiencies")        # key in DATASETS registry
+# notebooks/01_acquire_cms.py
+dbutils.widgets.text("dataset", "health_deficiencies")
 dbutils.widgets.dropdown("load_type", "full", ["full", "incremental"])
-dbutils.widgets.text("source_path", "")                         # folder or glob; empty = default folder for load_type
-dbutils.widgets.text("batch_id", "")                            # optional override; empty = derived per file
+dbutils.widgets.text("as_of_date", "")          # required YYYY-MM-DD; never derive silently from today
+dbutils.widgets.text("start_date", "")          # optional explicit incremental/backfill start
+dbutils.widgets.text("overlap_days", "60")      # used when start_date is empty
+dbutils.widgets.dropdown("force_refresh", "false", ["false", "true"])
 dbutils.widgets.text("catalog", "carewatch")
 dbutils.widgets.text("schema", "pipeline")
 dbutils.widgets.text("landing_root", "/Volumes/carewatch/pipeline/landing")
-
-P = {k: dbutils.widgets.get(k) for k in
-     ["dataset", "load_type", "source_path", "batch_id", "catalog", "schema", "landing_root"]}
 ```
 
-`config.py` holds a **dataset registry** so the same code serves every dataset:
+`as_of_date` is mandatory so the same run can be reproduced later. For a normal incremental, an empty `start_date` means “read the last successful Silver watermark and subtract `overlap_days`.” `force_refresh=false` skips content already registered successfully by SHA-256.
+
+For a bulk snapshot, `as_of_date` labels the acquisition run; it does not make the mutable CMS “current download” URL historical. Reproducibility comes from retaining the downloaded bytes, resolved URL, CMS catalog-modified date, and SHA-256 in the manifest.
+
+Raw-to-Bronze and Bronze-to-Silver keep their own widgets. `source_path` is an optional backfill/test override in `02_raw_to_bronze.py`; an empty value consumes only the landing files registered by a successful acquisition run.
+
+### Dataset registry
+
+`config.py` holds one registry used by acquisition, Bronze, and Silver:
 
 ```python
 # src/carewatch/config.py
 DATASETS = {
     "health_deficiencies": {
+        "dataset_id": "r5ix-sfxw",
+        "incremental_strategy": "api_date_window",
+        "watermark_col": "survey_date",
         "bronze_table": "bronze_nh_health_deficiencies",
         "silver_table": "silver_deficiency",
         "key_cols": ["cms_certification_number_ccn", "survey_date", "survey_type",
                      "deficiency_prefix", "deficiency_tag_number", "inspection_cycle"],
-        "date_col": "survey_date",
     },
     "penalties": {
+        "dataset_id": "g6vv-u9sr",
+        "incremental_strategy": "api_date_window",
+        "watermark_col": "penalty_date",
         "bronze_table": "bronze_nh_penalties",
         "silver_table": "silver_penalty",
         "key_cols": ["cms_certification_number_ccn", "penalty_date", "penalty_type",
                      "fine_id", "payment_denial_start_date"],
-        "date_col": "penalty_date",
     },
-    # provider_info, mds_quality: same shape
+    "provider_info": {
+        "dataset_id": "4pq5-n9py",
+        "incremental_strategy": "snapshot_diff",
+        "watermark_col": None,
+        "bronze_table": "bronze_nh_provider_info",
+        "silver_table": "silver_facility",
+        "key_cols": ["cms_certification_number_ccn"],
+    },
+    "mds_quality": {
+        "dataset_id": "djen-97ju",
+        "incremental_strategy": "snapshot_diff",
+        "watermark_col": None,
+        "bronze_table": "bronze_nh_mds_quality",
+        "silver_table": "silver_mds_quality",
+        "key_cols": ["cms_certification_number_ccn", "measure_code", "resident_type",
+                     "measure_period"],
+    },
 }
 
 def fq(p, name):
-    """fully qualified table name from parameters"""
     return f"{p['catalog']}.{p['schema']}.{name}"
 ```
 
-Default folder when `source_path` is empty: `<landing_root>/full_load` or `<landing_root>/incremental` based on `load_type`. That one rule is the difference between a standard run and a backfill (Step 9).
+### Full-load acquisition
+
+For `load_type=full`, Databricks must:
+
+1. Request the dataset’s metastore item using its configured `dataset_id`.
+2. Select the official CSV distribution; do not hard-code the release-specific `downloadURL`.
+3. Record the catalog modified date, resolved URL, and retrieval time.
+4. Stream the response in chunks to `<landing_root>/full_load/<dataset>/<as_of_date>/...partial`; do not call `response.content` for a 100+ MB file.
+5. Compute SHA-256 and byte count while streaming.
+6. Atomically rename the completed `.partial` file to `.csv` only after HTTP, byte-count, and hash checks pass.
+7. Register it in `source_file_manifest` with the CMS datastore count as `expected_run_rows`. Raw-to-Bronze later fills `source_rows` and sets `row_count_validated=true` only when the acquisition-run sum reconciles.
+8. If the same dataset/hash already succeeded and `force_refresh=false`, log `SKIPPED_ALREADY_ACQUIRED` and do not download/process it again.
+9. Pass the registered landing file to Raw-to-Bronze. No local sample or human upload participates in the run.
+
+The download helper should follow this shape:
+
+```python
+import hashlib, os, requests
+
+def stream_download(url, final_path):
+    partial = final_path + ".partial"
+    digest = hashlib.sha256()
+    size = 0
+    with requests.get(url, stream=True, timeout=(30, 300)) as response:
+        response.raise_for_status()
+        with open(partial, "wb") as out:
+            for chunk in response.iter_content(1024 * 1024):
+                if chunk:
+                    out.write(chunk)
+                    digest.update(chunk)
+                    size += len(chunk)
+    os.replace(partial, final_path)
+    return digest.hexdigest(), size
+```
+
+On failure, remove only that run’s `.partial` file, write a `CMS-to-Landing` failure log, and leave any previously completed landing file untouched.
+
+### Incremental acquisition
+
+**Health Deficiencies and Penalties — API date window**
+
+1. Determine `window_start` from explicit `start_date`, otherwise from the last successful Silver watermark minus 60 days. If neither exists, fail with an instruction to run the initial full load; never guess an unbounded incremental start.
+2. Use `as_of_date` as the inclusive upper bound.
+3. Query the datastore API with conditions on the configured watermark column, `limit=500`, and increasing `offset`.
+4. Write each returned page immediately as a separate JSON landing part; do not accumulate all pages in driver memory.
+5. Record the exact filter, page offset, result count, URL parameters, and content SHA-256 in `source_file_manifest`.
+6. Stop when a page contains fewer than 500 results. Treat a repeated page, non-advancing offset, malformed response, or reported-count mismatch as failure.
+7. Mark the overall `CMS-to-Landing` acquisition run `SUCCESS` only after every expected page is present and reconciled. Raw-to-Bronze may consume page manifests only when their parent acquisition run succeeded; successful early pages from a later failed pagination run must not leak downstream.
+8. Do not advance the watermark here. Advance it only after Bronze-to-Silver succeeds for every page in the acquisition run.
+
+The 60-day overlap deliberately re-reads recent keys so CMS corrections become Silver updates rather than duplicate rows.
+
+The overlap cannot detect a correction older than the window or a source-side deletion. Run a periodic bulk reconciliation for Deficiencies and Penalties as well; only a validated complete snapshot may drive scoped soft deletes.
+
+**Provider Information and MDS Quality Measures — snapshot diff**
+
+These datasets do not provide a trustworthy event-date column for row-level incremental extraction. For `load_type=incremental`, check the metastore for a newly published bulk snapshot:
+
+1. If its downloaded SHA-256 already exists as a successful manifest entry, log `SKIPPED_ALREADY_ACQUIRED`.
+2. Otherwise stream the new complete snapshot into `landing/incremental/<dataset>/<as_of_date>/`.
+3. Process it through Bronze and compare deterministic Silver `row_hash` values.
+4. Insert new keys, update changed keys, and leave unchanged keys untouched.
+
+This is a full source snapshot with incremental target processing. It is intentionally preferred over pretending `processing_date` is a row-change timestamp.
 
 ---
 
@@ -144,7 +256,7 @@ from pyspark.sql.types import StructType, StructField, StringType, TimestampType
 
 DEFICIENCY_COLS = [
     "cms_certification_number_ccn", "provider_name", "provider_address", "citytown", "state",
-    "zip_code", "survey_date", "survey_type", "deficiency_prefix", "deficiency_category",
+    "zip_code", "survey_date", "survey_footnote", "survey_type", "deficiency_prefix", "deficiency_category",
     "deficiency_tag_number", "deficiency_description", "scope_severity_code",
     "deficiency_corrected", "correction_date", "inspection_cycle", "standard_deficiency",
     "complaint_deficiency", "infection_control_inspection_deficiency", "citation_under_idr",
@@ -156,7 +268,9 @@ def string_struct(cols):
 
 # Metadata columns added by YOU in Bronze (every Bronze table has all of them)
 BRONZE_META = StructType([
+    StructField("_dataset_id",   StringType(),    False),
     StructField("_source_file",  StringType(),    False),
+    StructField("_source_file_sha256", StringType(), False),
     StructField("_batch_id",     StringType(),    False),
     StructField("_load_type",    StringType(),    False),
     StructField("_ingest_date",  DateType(),      False),   # date part, handy for backfill filters
@@ -172,7 +286,9 @@ def key(name: str) -> str:
     return re.sub(r"[^a-z0-9]", "", name.lower())
 # key("City/Town") == key("citytown") ; key("CMS Certification Number (CCN)") == key("cms_certification_number_ccn")
 ```
-   A few Provider Information headers will not match this way (CMS truncated one API name to `..._on_t_4a14`). Print the mismatches once and add an explicit override dictionary for them. Do not skip this; the bulk files are your full load.
+   A few Provider Information headers will not match this way. The verified September 2026 API name for the bulk header `Total number of nurse staff hours per resident per day on the weekend` is the CMS-truncated `total_number_of_nurse_staff_hours_per_resident_per_day_on_t_4a14`. Keep that exact API name as the canonical Bronze field and declare the mapping in an explicit override dictionary. Fail the contract check for any other unresolved mismatch.
+
+The live CMS datastore exposes every field as text, which supports the all-string Bronze decision but is not a Silver typing contract. Use the consolidated CMS Nursing Home Data Dictionary plus the profiled local values to define Silver types. The locked contract is [`docs/bronze_silver_schema_contract.md`](bronze_silver_schema_contract.md).
 
 ---
 
@@ -186,12 +302,12 @@ Create these tables in `00_setup_tables.py` (Delta):
 |---|---|---|
 | run_id | string | uuid per notebook run |
 | batch_id | string | ties Bronze batch to Silver processing |
-| pipeline_layer | string | `Raw-to-Bronze`, `Bronze-to-Silver` |
+| pipeline_layer | string | `CMS-to-Landing`, `Raw-to-Bronze`, `Bronze-to-Silver` |
 | dataset | string | e.g. `health_deficiencies` |
 | load_type | string | `full` / `incremental` |
-| parameter_processed | string | file path (Raw-to-Bronze) or batch id/date range (Bronze-to-Silver) |
+| parameter_processed | string | source URL/filter, file path, batch id, or date range |
 | start_time, end_time | timestamp | UTC |
-| status | string | `SUCCESS` / `FAILURE` / `QUARANTINED_PARTIAL` |
+| status | string | `SUCCESS` / `SKIPPED_ALREADY_ACQUIRED` / `FAILURE` / `QUARANTINED_PARTIAL` |
 | rows_read | long | |
 | rows_inserted | long | |
 | rows_updated | long | 0 for Bronze appends |
@@ -199,6 +315,45 @@ Create these tables in `00_setup_tables.py` (Delta):
 | rows_quarantined | long | |
 | error_message | string | first 2000 chars |
 | load_timestamp | timestamp | when the log row was written (keeps the "every table" rule true) |
+
+Also create:
+
+**`source_file_manifest`** — one row per acquired bulk file or API page:
+
+| Column | Type | Notes |
+|---|---|---|
+| `acquisition_run_id` | string | UUID for one acquisition invocation |
+| `dataset`, `dataset_id` | string | registry key and CMS identifier |
+| `load_type` | string | `full` / `incremental` |
+| `acquisition_strategy` | string | `bulk_snapshot` / `api_date_window` / `snapshot_diff` |
+| `source_url` | string | resolved official CMS URL without secrets |
+| `source_catalog_modified` | date | metastore modified date when available |
+| `window_start`, `window_end` | date | API bounds; null for bulk snapshot |
+| `page_offset` | long | API offset; null for bulk snapshot |
+| `landing_path` | string | completed Volume path |
+| `batch_id` | string | deterministic batch passed into Bronze |
+| `source_content_sha256` | string | stable idempotency identity; excludes volatile API envelope fields |
+| `source_file_sha256` | string | digest of the exact landed file bytes |
+| `source_bytes` | long | completed file size |
+| `expected_run_rows` | long | CMS count for the whole snapshot/filter; repeated per page when applicable |
+| `source_rows` | long | rows parsed from this file/page; nullable until Bronze validation |
+| `row_count_validated` | boolean | true only after count reconciliation |
+| `status` | string | `SUCCESS`, `SKIPPED_ALREADY_ACQUIRED`, or `FAILURE` |
+| `error_message` | string | first 2000 characters |
+| `load_timestamp` | timestamp | UTC manifest-write time |
+
+**`ingestion_watermarks`** — one current row per API-incremental dataset:
+
+| Column | Type | Notes |
+|---|---|---|
+| `dataset` | string | primary key |
+| `watermark_column` | string | `survey_date` or `penalty_date` |
+| `watermark_value` | date | maximum successfully merged source date |
+| `last_successful_acquisition_run_id` | string | run whose every page reached Silver |
+| `last_successful_silver_run_id` | string | corresponding merge run |
+| `load_timestamp` | timestamp | UTC update time |
+
+Update this table with `MERGE` only after all acquired pages for the run have successful Bronze-to-Silver log rows. A failed or partially quarantined run does not advance it.
 
 Also create **`schema_drift_log`** (run_id, dataset, source_file, drift_type, column_name, detail, load_timestamp) and **`silver_quarantine`** (dataset, batch_id, raw_record string, failed_rules array<string>, load_timestamp).
 
@@ -259,7 +414,7 @@ for f in files:
 
 ## 6. Step 5: Raw to Bronze (1 to 1.5 days)
 
-For **each file** in the folder (loop per file so every file gets its own log row):
+Select files from successful `source_file_manifest` rows for the requested acquisition run. Do not scan an upload folder and assume every file is trusted. For **each registered file or API page** (loop per file so every file gets its own log row):
 
 1. **Read the header** and compare with the expected columns (drift check):
 
@@ -298,12 +453,14 @@ def read_csv_file(spark, path, ordered_cols):
             .schema(schema)                      # explicit, NOT inferred
             .load(path))
 ```
-   For the incremental **JSON** files (structure `{"_meta": {...}, "results": [ {...}, ... ]}`), read with an explicit schema `StructType([StructField("_meta", ...), StructField("results", ArrayType(string_struct(cols)))])` and `multiLine=true`, then `F.explode("results")`.
+   For incremental **JSON page files**, the acquisition notebook wraps each CMS page as `{"_meta": {...}, "results": [ {...}, ... ]}`. Read it with the explicit envelope in the schema contract using `StructType([StructField("_meta", ...), StructField("results", ArrayType(string_struct(cols)))])` and `multiLine=true`, validate the metadata/page count, then `F.explode("results")`.
 4. **Add the metadata columns**, including `load_timestamp`:
 
 ```python
-def add_bronze_meta(df, path, batch_id, load_type):
+def add_bronze_meta(df, dataset_id, path, source_file_sha256, batch_id, load_type):
     return (df.withColumn("_source_file", F.lit(path))
+              .withColumn("_dataset_id", F.lit(dataset_id))
+              .withColumn("_source_file_sha256", F.lit(source_file_sha256))
               .withColumn("_batch_id", F.lit(batch_id))
               .withColumn("_load_type", F.lit(load_type))
               .withColumn("_ingest_date", F.current_date())
@@ -311,12 +468,13 @@ def add_bronze_meta(df, path, batch_id, load_type):
 ```
    (Use `F.lit(path)` from the path you looped over; do not use `input_file_name()` under Unity Catalog.)
 5. **Quarantine bad CSV rows**: rows where `_corrupt_record IS NOT NULL` go to a Bronze quarantine table (`bronze_quarantine`), the rest continue.
-6. **Write idempotently**. Make `batch_id` **deterministic** (hash of dataset + load type + file name) unless the user passes one. Then rerunning the same file overwrites exactly that batch instead of duplicating it:
+6. **Write idempotently**. Compute the source-file SHA-256 while registering the file. Make `batch_id` **deterministic** from dataset + load type + stable source identity + source-content SHA-256 unless the user passes one. The stable source identity is the resolved bulk URL, or the API URL/filter/page; never use the run-specific landing directory. Including the content hash prevents changed content at the same source from being mistaken for the original batch, while an identical rerun resolves to the same batch:
 
 ```python
 import hashlib
-def derive_batch_id(dataset, load_type, file_name):
-    return hashlib.sha1(f"{dataset}|{load_type}|{file_name}".encode()).hexdigest()[:16]
+def derive_batch_id(dataset, load_type, source_identity, source_content_sha256):
+    identity = f"{dataset}|{load_type}|{source_identity}|{source_content_sha256}"
+    return hashlib.sha256(identity.encode()).hexdigest()[:24]
 
 (df.write.format("delta")
    .mode("overwrite")
@@ -326,7 +484,7 @@ def derive_batch_id(dataset, load_type, file_name):
 ```
    If `replaceWhere` misbehaves on your runtime, use `DELETE FROM <bronze_table> WHERE _batch_id = '<id>'` followed by an append.
 7. Count rows once (`n = df.count()`) and put it in the log record. Avoid `collect()`/`toPandas()` on full data (free-tier compute).
-8. After success, you may copy the file to `landing/archive/` (optional; not required).
+8. After success, update the manifest/Bronze log relationship. Archiving is optional because the content-addressed manifest and dated landing path already make completed acquisitions immutable; never archive or delete a file before Silver succeeds.
 
 ---
 
@@ -349,11 +507,11 @@ If `total_rows > distinct_keys`, inspect the duplicates. Either add a column to 
 | Names | snake_case, same as Bronze canonical names |
 | Dates | `survey_date`, `correction_date`, `penalty_date`, etc. become `DATE` |
 | Integers | `inspection_cycle`, bed counts, star ratings (1 to 5), `payment_denial_length_in_days` become `INT` |
-| Decimals | `fine_amount` becomes `DECIMAL(12,2)`; staffing hours, turnover, scores become `DOUBLE` |
+| Decimals | `fine_amount` and facility fine totals become `DECIMAL(14,2)`; staffing hours, turnover, and quality scores become `DOUBLE` |
 | Flags | `Y`/`N` columns become `BOOLEAN` |
-| **Keep as STRING** | `cms_certification_number_ccn`, `zip_code`, `deficiency_tag_number`, `telephone` (dropped anyway): leading zeros matter, so casting these to numbers is a bug |
+| **Keep as STRING** | `cms_certification_number_ccn`, `zip_code`, `provider_ssa_county_code`, `deficiency_tag_number`, `measure_code`, `fine_id`, and `chain_id`: leading zeros or identifier formatting matter, so casting these to numbers is a bug |
 | Empty strings | become `NULL` |
-| PII (from Phase 1) | drop `telephone_number`; replace `provider_address` with `provider_address_hash` (SHA-256 with a salt kept in a Databricks secret, not in code) |
+| PII (from Phase 1) | drop `telephone_number`; replace `provider_address` with `provider_address_hash` (salted SHA-256 with the salt kept in a Databricks secret, not in code); drop `location` because it repeats the street address |
 | Added columns | `severity_group` (A to C, D to F, G to I, J to L as in Phase 1), `row_hash`, `is_deleted` (BOOLEAN), `source_processing_date`, `load_timestamp` |
 | Primary key | a `<entity>_key` column = SHA-256 of the key columns (this is what you MERGE on) |
 
@@ -363,17 +521,17 @@ Silver tables:
 |---|---|---|
 | `silver_deficiency` | `deficiency_key` | one row per citation |
 | `silver_penalty` | `penalty_key` | fines and payment denials |
-| `silver_facility` | `cms_certification_number_ccn` (SCD1) or `facility_sk` + `valid_from` (SCD2) | about 100 typed columns |
+| `silver_facility` | `facility_key` derived from `cms_certification_number_ccn` (SCD1) | 102 source columns are projected into the locked typed/privacy-safe contract |
 | `silver_mds_quality` | `mds_key` | scores `q1` to `q4` and four-quarter average as `DOUBLE` |
 | `silver_quarantine` | none (append-only) | rejected records with reason |
 
-**Data dictionary: do not hand-type 100 columns.** Generate it from your code (Step 11).
+The exact source-to-Silver types, nullability, derived fields, and dropped fields are locked in [`docs/bronze_silver_schema_contract.md`](bronze_silver_schema_contract.md). Generate the final deployed data dictionary from code (Step 11) and compare it to that contract; do not independently hand-type a second definition of the 102-column facility source.
 
 ---
 
 ## 8. Step 7: Bronze to Silver with MERGE (1.5 to 2 days)
 
-Pipeline inside `02_bronze_to_silver.py` for one dataset and one set of batches:
+Pipeline inside `03_bronze_to_silver.py` for one dataset and one set of batches:
 
 **a. Select the Bronze slice from parameters** (this enables backfills, Step 9):
 
@@ -406,7 +564,7 @@ def tcast(col, to):          # safe cast
     return F.expr(f"try_cast({col} as {to})")
 ```
 
-**c. Quarantine non-conforming rows** instead of failing: for each required typed column, if the raw value is not null but `try_cast` is null, the row is bad. Collect the failing column names into an array, split the DataFrame into `good` and `bad`, write `bad` (with the raw record as JSON via `F.to_json(F.struct(*raw_cols))`) to `silver_quarantine`. Also reject rows that break your rules from Phase 1 (CCN not 6 characters, rating outside 1 to 5, negative fine, correction before survey date).
+**c. Quarantine non-conforming rows** instead of failing: for each required typed column, if the raw value is not null but `try_cast` is null, the row is bad. Collect the failing column names into an array, split the DataFrame into `good` and `bad`, write `bad` (with the raw record as JSON via `F.to_json(F.struct(*raw_cols))`) to `silver_quarantine`. Also reject rows that break the locked rules (CCN not six alphanumeric characters, rating outside 1 to 5, negative fine, or an invalid penalty subtype combination). **Do not reject a deficiency merely because `correction_date < survey_date`.** The September 2026 extract contains 5,339 such rows, including 5,167 valid `Past Non-Compliance` records; CMS can document a condition that was corrected before the survey. Validate correction-date presence against correction status instead.
 
 **d. De-duplicate inside the batch.** MERGE fails ("multiple source rows matched") if the source has two rows with the same key:
 
@@ -420,7 +578,10 @@ good = good.withColumn("_rn", F.row_number().over(w)).filter("_rn = 1").drop("_r
 
 ```python
 def sha_cols(cols):
-    return F.sha2(F.concat_ws("||", *[F.coalesce(F.col(c).cast("string"), F.lit("")) for c in cols]), 256)
+    # Ordered JSON with explicit null fields avoids delimiter and null/empty collisions.
+    payload = F.to_json(F.struct(*[F.col(c).alias(c) for c in cols]),
+                        options={"ignoreNullFields": "false"})
+    return F.sha2(payload, 256)
 
 good = (good.withColumn("deficiency_key", sha_cols(KEY_COLS))
             .withColumn("row_hash", sha_cols(BUSINESS_COLS))   # business columns only, NOT load_timestamp
@@ -442,13 +603,14 @@ WHEN NOT MATCHED THEN INSERT *
 ```
 Because unchanged rows have the same `row_hash`, running this twice on the same data inserts **0** and updates **0** rows, and `load_timestamp` is untouched on unchanged rows.
 
-**g. Soft deletes (full loads only).** Add this clause **only when `load_type = 'full'`** and **scope it to the same slice the snapshot covers**. Your full-load deficiency sample stops at the cutoff date, so without the date condition you would wrongly delete every incremental row loaded later:
+**g. Soft deletes (validated complete snapshots only).** Add this clause only when the source manifest proves that the input is a complete CMS bulk snapshot, every expected file/page succeeded, and the row-count reconciliation passed. Scope it to the exact snapshot coverage. Never run it for an API date window, an incomplete download, a test subset, or a manually supplied file:
 
 ```sql
-WHEN NOT MATCHED BY SOURCE AND t.is_deleted = false AND t.survey_date < DATE'2026-07-01'
+WHEN NOT MATCHED BY SOURCE AND t.is_deleted = false
+  AND t.survey_date <= CAST(:snapshot_max_date AS DATE)
 THEN UPDATE SET t.is_deleted = true, t.load_timestamp = current_timestamp()
 ```
-The cutoff must come from a parameter, not be typed into the code. Skip this clause for incremental loads entirely.
+The bound comes from validated snapshot metadata, not a hard-coded date. For Provider Information and MDS snapshot refreshes, soft deletion is allowed only if that refresh is explicitly marked `complete_snapshot=true`. Skip deletion for every `api_date_window` run.
 
 **h. Get row counts for the log** from the Delta history (do not recount the table):
 
@@ -461,7 +623,7 @@ rec["rows_deleted"]  = int(m.get("numTargetRowsDeleted", 0))
 ```
 (Soft deletes show up under updated; count `is_deleted` changes separately if you want them in `rows_deleted`.)
 
-**i. Facility table.** First do the same MERGE keyed on CCN (SCD1). SCD2 later: use the standard Delta pattern: stage rows whose `row_hash` changed twice (once with `merge_key = ccn` to expire the old row, once with `merge_key = NULL` to insert the new version), with `valid_from`, `valid_to`, `is_current`.
+**i. Facility table.** Use the same MERGE pattern with `facility_key = SHA-256(CCN)` and SCD Type 1 semantics. SCD Type 2 is outside the locked Phase 2 implementation; do not add `valid_from`, `valid_to`, or `is_current` unless the instructor makes SCD2 mandatory and the architecture record is updated first.
 
 ---
 
@@ -482,13 +644,15 @@ Create **test files** for the demo (Step 10): copy a sample CSV, (1) add a colum
 
 | Scenario | Notebook | Parameters |
 |---|---|---|
-| **Initial full load** | `01_raw_to_bronze` | `dataset=health_deficiencies`, `load_type=full`, `source_path=` (empty = default full folder) |
-| **Standard incremental** | `01_raw_to_bronze` then `02_bronze_to_silver` | `load_type=incremental`, `source_path=` empty (default incremental folder). Silver run with no batch filters processes only unprocessed batches. |
-| **Backfill one file** | `01_raw_to_bronze` | `source_path=/Volumes/.../landing/incremental/nh_penalties_incr_2026-06.json` |
-| **Backfill by batch** | `02_bronze_to_silver` | `batch_id=<id from pipeline_execution_logs>` |
-| **Backfill a historical window** | `02_bronze_to_silver` | `ingest_date_from=2026-08-01`, `ingest_date_to=2026-08-31`, `reprocess=true` |
+| **Initial full load** | `01_acquire_cms` → `02_raw_to_bronze` → `03_bronze_to_silver` | `dataset=health_deficiencies`, `load_type=full`, explicit `as_of_date`; Databricks discovers and downloads the CMS bulk CSV |
+| **Event incremental** | Same three notebooks | Health Deficiencies/Penalties with `load_type=incremental`; empty `start_date` uses successful watermark minus overlap; explicit `as_of_date` is upper bound |
+| **Snapshot-diff incremental** | Same three notebooks | Provider/MDS with `load_type=incremental`; Databricks checks for a new CMS snapshot, downloads it if new, and MERGEs only new/changed rows |
+| **Source-date backfill** | `01_acquire_cms` → downstream notebooks | API dataset with explicit `start_date`, `as_of_date`, and `force_refresh=false` |
+| **Reprocess one acquired file** | `02_raw_to_bronze` | `source_path=<landing_path from source_file_manifest>`; no local upload |
+| **Reprocess by batch** | `03_bronze_to_silver` | `batch_id=<id from pipeline_execution_logs>` |
+| **Reprocess an ingestion window** | `03_bronze_to_silver` | `ingest_date_from=2026-08-01`, `ingest_date_to=2026-08-31`, `reprocess=true` |
 
-Two checks that you really are parameterized: (1) grep the repo for `"2026-` and `/Volumes/` and make sure they only appear in widget defaults and docs; (2) the same notebook runs for a different dataset by changing only the `dataset` widget.
+Three checks that you really are parameterized: (1) grep the repo for `"2026-` and release-specific CMS download URLs and make sure they appear only in docs/tests; (2) `/Volumes/` appears only in widget defaults/config, not transformation functions; (3) the same notebooks run for a different dataset by changing only the `dataset` widget.
 
 If Jobs are not available on your plan, running notebooks manually with widgets is fine; say so in the README.
 
@@ -498,19 +662,23 @@ If Jobs are not available on your plan, running notebooks manually with widgets 
 
 Run `99_demo_idempotency_drift_backfill.py` and keep the outputs:
 
-1. **Idempotency:** run Raw-to-Bronze then Bronze-to-Silver. Record `COUNT(*)` and `COUNT(DISTINCT key)` of Bronze and Silver. Run **both again**. Counts identical, and the second Silver log row shows `rows_inserted = 0, rows_updated = 0`.
-2. **Incremental:** load the incremental JSON; Silver inserts only new keys.
-3. **Update:** edit one value in a copy of a file, reload; one row is updated (and only that row's `load_timestamp` changes).
-4. **Backfill:** rerun with explicit dates/batch id for an old batch; no duplicates.
-5. **Drift:** run the three test files; show `schema_drift_log`, `silver_quarantine` and the log rows (status `SUCCESS`, `QUARANTINED_PARTIAL`, `FAILURE`), with the batch still completing for the good files.
-6. **Failure logging:** point `source_path` at a missing file; a `FAILURE` row with an `error_message` appears.
-7. `SELECT * FROM pipeline_execution_logs ORDER BY start_time DESC` screenshot showing both layers and both load types.
+1. **Automated full acquisition:** start with an empty landing path, run `01_acquire_cms` with `load_type=full`, and show that Databricks resolved the CMS URL, created the file, computed its hash, and wrote a successful manifest/log row. The evidence must not rely on a manually uploaded full-load file.
+2. **Acquisition idempotency:** rerun the same full acquisition. Show `SKIPPED_ALREADY_ACQUIRED`, the same content hash, and no second physical copy or Bronze duplication.
+3. **Pipeline idempotency:** run Raw-to-Bronze then Bronze-to-Silver. Record `COUNT(*)` and `COUNT(DISTINCT key)` of Bronze and Silver. Run both again. Counts remain identical, and the second Silver log row shows `rows_inserted = 0, rows_updated = 0`.
+4. **API incremental:** run Health Deficiencies or Penalties with an explicit `as_of_date`; show paginated landing JSON, the 60-day overlap filter, manifest pages, and only new/changed Silver keys.
+5. **Watermark safety:** show the watermark before and after successful Silver completion. Demonstrate that a deliberately failed Silver run does not advance it.
+6. **Snapshot-diff incremental:** acquire a new Provider or MDS bulk snapshot and show that unchanged row hashes are not updated while changed/new keys are merged.
+7. **Update:** alter one value only in a controlled test copy after acquisition; one Silver row is updated and only that row's `load_timestamp` changes.
+8. **Backfill:** acquire/reprocess an explicit old source-date window or batch; no duplicates.
+9. **Drift:** run the three controlled test files; show `schema_drift_log`, quarantine, and log rows with the batch still completing for good files.
+10. **Failure logging:** use a controlled invalid CMS URL or mock acquisition failure and show a `CMS-to-Landing` `FAILURE`; also show downstream failure logging without modifying a successful manifest row.
+11. Query `source_file_manifest`, `ingestion_watermarks`, and `pipeline_execution_logs` to show all three layers and both load types.
 
 ---
 
 ## 12. Step 11: README and data dictionary
 
-The README must contain: (a) project overview and architecture, (b) **Bronze data model**, (c) **Silver data model**, (d) **execution guide** (the Step 9 table plus how to set up the workspace), (e) the requirements traceability table from Section 0, (f) known limitations.
+The README must contain: (a) project overview and architecture, (b) automated CMS acquisition design with an explicit statement that full loads are not uploaded manually, (c) **Bronze data model**, (d) **Silver data model**, (e) **execution guide** for initial full, API incremental, snapshot-diff incremental, and backfill runs, (f) the requirements traceability table from Section 0, and (g) known limitations.
 
 Generate the dictionary from code so it cannot drift from reality:
 
@@ -526,7 +694,7 @@ def dictionary_md(spark, table, pk_cols, descriptions=None):
 
 print(dictionary_md(spark, "carewatch.pipeline.silver_deficiency", ["deficiency_key"]))
 ```
-Paste the output into `docs/data_dictionary.md` and link it from the README. Add descriptions by hand only for columns that need explanation (severity codes, hashes, flags). For the 100-column facility table, group the descriptions in one paragraph instead of 100 lines.
+Paste the output into `docs/data_dictionary.md` and link it from the README. Add descriptions by hand only for columns that need explanation (severity codes, hashes, flags). For the 102-column facility source, group repetitive descriptions rather than manually maintaining another competing schema definition.
 
 ---
 
@@ -538,11 +706,15 @@ Paste the output into `docs/data_dictionary.md` and link it from the README. Add
 Final checklist (tick all before submitting the repo link):
 
 - [ ] `grep -ri inferSchema notebooks src` returns nothing (mentions in docs/README are fine)
+- [ ] An empty Databricks landing area can perform the initial full load directly from CMS; no full-load file is manually uploaded
+- [ ] `source_file_manifest` records URL, strategy, hash, bytes, expected/parsed rows, count validation, landing path, and status for every bulk file/API page
+- [ ] API incrementals paginate, use an explicit upper bound and safety overlap, and advance watermarks only after Silver succeeds
+- [ ] Provider/MDS refreshes use new CMS snapshots plus row-hash MERGE, not a fabricated event-date incremental
 - [ ] Every Bronze and Silver table, plus the log tables, has `load_timestamp`
 - [ ] Silver written only via `MERGE INTO`; rerun shows 0 inserted / 0 updated
 - [ ] All notebooks use widgets/parameters; no hard-coded dates or paths
 - [ ] Drift demo and quarantine tables populated, batch does not crash
-- [ ] `pipeline_execution_logs` has rows for Raw-to-Bronze and Bronze-to-Silver, full and incremental, with all required fields
+- [ ] `pipeline_execution_logs` has `CMS-to-Landing`, `Raw-to-Bronze`, and `Bronze-to-Silver` rows for full and incremental processing
 - [ ] README has Bronze model, Silver model, backfill-vs-incremental guide
 - [ ] Repo opens in a private browser window for your instructor
 - [ ] `docs/evidence/` has screenshots/query outputs
@@ -553,19 +725,19 @@ Final checklist (tick all before submitting the repo link):
 
 | Day | Work |
 |---|---|
-| 1 | Steps 1 to 4: workspace, repo, widgets/config, schemas, logging tables and helper |
-| 2 | Step 5: Raw-to-Bronze for Health Deficiencies (full + incremental JSON), drift check |
-| 3 | Step 6 profiling and Step 7 for Health Deficiencies (clean, cast, quarantine, MERGE) |
-| 4 | Replicate for Penalties, Provider Information, MDS Quality (registry makes this fast); soft deletes |
-| 5 | Steps 8 and 10: drift and idempotency demos, evidence screenshots |
-| 6 | Step 11: README, data dictionary, final checklist, buffer |
+| 1 | Workspace, outbound CMS connectivity, registry, setup tables, manifest/watermark design |
+| 2 | Databricks CMS acquisition: streaming bulk full load plus paginated API incremental |
+| 3 | Raw-to-Bronze and drift handling for Health Deficiencies |
+| 4 | Bronze-to-Silver for Health Deficiencies; then replicate for the other datasets |
+| 5 | Snapshot-diff refreshes, watermark tests, drift, idempotency, and failure evidence |
+| 6 | README, generated data dictionary, screenshots, and final checklist |
 
 ---
 
 ## Things I could not verify (check them early)
 
-- **Databricks Free Edition specifics:** serverless compute may block RDD/caching APIs and some Spark configs, and Git folders or Jobs may be limited. Test a 5-line notebook on day 1.
+- **Databricks Free Edition specifics:** serverless compute may block RDD/caching APIs, some Spark configs, Jobs, or outbound access to CMS. Test HTTPS requests and writing a streamed response to a UC Volume on day 1. If outbound CMS access is blocked, stop and ask the instructor for an approved workspace/network alternative; manual full-load upload is not an acceptable fallback under the locked requirement.
 - **Your exact runtime version:** `try_cast`, `replaceWhere` on a data column and `WHEN NOT MATCHED BY SOURCE` need reasonably recent Databricks/Delta versions. If a statement errors, use the fallback noted next to it.
-- **Primary keys:** the keys in this guide are candidates until profiled (Step 6).
+- **Primary keys:** the proposed keys passed uniqueness and null-component profiling on the September 2026 full extracts. They must still be revalidated for every new full CMS snapshot.
 - **Provider Information column mapping:** about 100 columns; some bulk-file headers will not match API names automatically (Step 3).
 - **Instructor expectations:** whether Free Edition is accepted in place of Community Edition, and whether SCD2 is mandatory. Ask in one message.
